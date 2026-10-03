@@ -1,0 +1,32 @@
+# Render Blueprint: Dashboard > New > Blueprint > pick this repo.
+# One web service runs the whole game server (HTTP + WebSocket on one port) and keeps live games in memory.
+# Redis (Render Key Value) stores venue maps, sign photos, live-game snapshots (restart/redeploy recovery)
+# and game history.
+services:
+  - type: web
+    name: irl-amongus-server
+    runtime: node
+    region: oregon
+    # Free web services sleep after ~15 min idle (30–60s cold start) — use starter for playtests/demo.
+    plan: starter
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: irl-amongus-kv
+          property: connectionString
+
+  - type: keyvalue
+    name: irl-amongus-kv
+    region: oregon
+    # Starter or above: the free tier has no disk persistence, so maps and photos would vanish on restart.
+    plan: starter
+    # Never evict: maps and sign photos have no TTL and must not disappear under memory pressure.
+    maxmemoryPolicy: noeviction
+    # Empty allow list = reachable only from services in this Render account (internal network).
+    ipAllowList: []
