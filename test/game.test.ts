@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Game, rssiAtDistance, type Outbound } from "../src/game.ts";
-import type { Player, Station } from "../src/types.ts";
+import { DEFAULT_SETTINGS, type Player, type Station } from "../src/types.ts";
 
 function setup(n = 4, stations?: Partial<Station>[]) {
   let clock = 1_000_000;
@@ -139,6 +139,52 @@ test("tasks require a checkpoint, upload needs the full duration, fake tasks don
   // The checkpoint expires.
   ctx.advance(ctx.game.settings.checkpointTtlSec * 1000 + 1);
   assert.throws(() => ctx.act(crew[1], "task_start", { taskId: crew[1].tasks[0].id }), /Check in/);
+});
+
+test("submit scan needs the full scan time at the scanner", () => {
+  const ctx = setup(4, [{ name: "MedBay", kind: "task" }]);
+  ctx.game.settings.tasksPerPlayer = 1;
+  ctx.game.settings.taskTypes = ["scan"];
+  const { crew } = startPlaying(ctx);
+  const [a] = crew;
+  const task = a.tasks[0];
+  assert.equal(task.type, "scan");
+  ctx.act(a, "checkpoint", { stationId: ctx.station("MedBay").id, method: "qr" });
+  assert.throws(() => ctx.act(a, "task_complete", { taskId: task.id }), /Scan interrupted/);
+  ctx.act(a, "task_start", { taskId: task.id });
+  ctx.advance(ctx.game.settings.uploadSec * 1000);
+  assert.throws(() => ctx.act(a, "task_complete", { taskId: task.id }), /Scan interrupted/, "uses scanSec, not uploadSec");
+  ctx.advance((ctx.game.settings.scanSec - ctx.game.settings.uploadSec) * 1000);
+  ctx.act(a, "task_complete", { taskId: task.id });
+  assert.equal(task.completed, true);
+});
+
+test("divert power is two steps at different signs; one-step mini-games finish at once", () => {
+  const ctx = setup(4, [
+    { name: "Electrical", kind: "task" },
+    { name: "Shields", kind: "task" },
+  ]);
+  ctx.game.settings.tasksPerPlayer = 1;
+  ctx.game.settings.taskTypes = ["divert"];
+  const { crew } = startPlaying(ctx);
+  const task = crew[0].tasks[0];
+  assert.equal(task.steps.length, 2);
+  assert.notEqual(task.steps[0], task.steps[1]);
+  ctx.act(crew[0], "checkpoint", { stationId: task.steps[0], method: "sign" });
+  ctx.act(crew[0], "task_complete", { taskId: task.id });
+  assert.equal(task.completed, false, "diverting doesn't finish the task");
+  assert.throws(() => ctx.act(crew[0], "task_complete", { taskId: task.id }), /Check in|station/i);
+  ctx.act(crew[0], "checkpoint", { stationId: task.steps[1], method: "sign" });
+  ctx.act(crew[0], "task_complete", { taskId: task.id });
+  assert.equal(task.completed, true);
+
+  const quick = setup(4, [{ name: "Admin", kind: "task" }]);
+  quick.act(quick.host, "update_settings", { taskTypes: ["swipe", "shields", "o2", "divert"] });
+  startPlaying(quick);
+  for (const t of quick.players.flatMap((p) => p.tasks)) {
+    assert.ok(["swipe", "shields", "o2"].includes(t.type), "one sign: divert is impossible");
+    assert.equal(t.steps.length, 1);
+  }
 });
 
 test("GPS checkpoints are geofenced on the server", () => {
@@ -376,7 +422,7 @@ test("restoring an old snapshot drops removed settings and defaults new ones", (
   snap.settings.killRssiThreshold = -65;
   const restored = Game.fromSnapshot(snap, () => {});
   assert.equal(restored.settings.killDistanceM, 1.5);
-  assert.deepEqual(restored.settings.taskTypes, ["wiring", "upload", "sequence", "delivery"]);
+  assert.deepEqual(restored.settings.taskTypes, DEFAULT_SETTINGS.taskTypes);
   assert.equal((restored.settings as any).killRssiThreshold, undefined);
 });
 
