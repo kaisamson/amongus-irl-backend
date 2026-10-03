@@ -12,6 +12,7 @@ import {
   type Sighting,
   type Station,
   type Task,
+  type TaskType,
   type VoteResult,
   type Winner,
 } from "./types.ts";
@@ -75,6 +76,16 @@ function shuffle<T>(arr: T[]): T[] {
     [a[i], a[j]] = [a[j], a[i]];
   }
   return a;
+}
+
+const TASK_TYPES: TaskType[] = ["wiring", "upload", "sequence", "delivery"];
+
+/**
+ * Log-distance path-loss model: the RSSI expected at `distanceM`, given the RSSI measured at 1 m.
+ * BLE RSSI is noisy (bodies, pockets, orientation), so treat distances as approximate.
+ */
+export function rssiAtDistance(distanceM: number, rssiAt1m: number, pathLossExponent: number): number {
+  return rssiAt1m - 10 * pathLossExponent * Math.log10(Math.max(distanceM, 0.1));
 }
 
 function haversineM(lat1: number, lng1: number, lat2: number, lng2: number): number {
@@ -185,6 +196,7 @@ export class Game {
       case "add_station": result = this.addStation(p, payload); break;
       case "delete_station": result = this.deleteStation(p, payload); break;
       case "kick": result = this.kick(p, payload); break;
+      case "add_bot": result = this.addBot(p); break;
       case "start_game": result = this.startGame(p); break;
       case "ack_role": result = this.ackRole(p); break;
       case "proximity": result = this.proximity(p, payload); break;
@@ -219,8 +231,25 @@ export class Game {
     this.requirePhase("LOBBY");
     for (const [k, v] of Object.entries(patch ?? {})) {
       if (!(k in DEFAULT_SETTINGS)) throw new GameError(`Unknown setting: ${k}`);
+      if (k === "taskTypes") {
+        if (!Array.isArray(v) || v.length === 0 || !v.every((t) => TASK_TYPES.includes(t as TaskType))) {
+          throw new GameError("Pick at least one task type");
+        }
+        this.settings.taskTypes = [...new Set(v as TaskType[])];
+        continue;
+      }
+      if (k === "forcedImpostorIds") {
+        if (!Array.isArray(v) || !v.every((id) => this.players.has(id))) throw new GameError("Unknown player");
+        this.settings.forcedImpostorIds = [...new Set(v as string[])];
+        continue;
+      }
       const expected = typeof (DEFAULT_SETTINGS as any)[k];
       if (typeof v !== expected) throw new GameError(`Setting ${k} must be ${expected}`);
+      if (typeof v === "number" && !Number.isFinite(v)) throw new GameError(`Setting ${k} must be a number`);
+      if (typeof v === "number" && v < 0 && k !== "rssiAt1m") throw new GameError(`Setting ${k} can't be negative`);
+      if ((k === "killDistanceM" || k === "reportDistanceM" || k === "pathLossExponent") && (v as number) <= 0) {
+        throw new GameError(`Setting ${k} must be greater than 0`);
+      }
       (this.settings as any)[k] = v;
     }
   }
@@ -233,7 +262,6 @@ export class Game {
       id: shortId(4),
       name: String(s.name).slice(0, 40),
       kind: s.kind,
-      taskType: s.kind === "task" ? (s.taskType ?? "wiring") : undefined,
       lat: typeof s.lat === "number" ? s.lat : undefined,
       lng: typeof s.lng === "number" ? s.lng : undefined,
       radiusM: typeof s.radiusM === "number" ? s.radiusM : 15,
@@ -252,11 +280,39 @@ export class Game {
     this.hooks.onStationsChanged?.(this.stations);
   }
 
+  /** Host-only testing aid: a server-run player so a lobby can reach the minimum with fewer phones. */
+  private addBot(p: Player) {
+    this.requireHost(p);
+    this.requirePhase("LOBBY");
+    const taken = new Set([...this.players.values()].map((pl) => pl.name.toLowerCase()));
+    let n = 1;
+    while (taken.has(`bot ${n}`)) n++;
+    const bot = this.addPlayer(`Bot ${n}`);
+    bot.bot = true;
+    bot.connected = true;
+    return { playerId: bot.id };
+  }
+
+  /** Bots do the bare minimum so games can progress: ack roles, gather, vote skip. They never kill. */
+  private runBots() {
+    const bots = [...this.players.values()].filter((pl) => pl.bot);
+    if (bots.length === 0) return;
+    if (this.phase === "ROLE_REVEAL") {
+      for (const b of bots) if (!b.ackedRole && this.phase === "ROLE_REVEAL") this.ackRole(b);
+    } else if (this.phase === "MEETING" && this.meeting?.stage === "gathering") {
+      for (const b of bots) if (b.alive) this.meeting.arrived.add(b.id);
+      this.maybeStartDiscussion();
+    } else if (this.phase === "VOTING") {
+      for (const b of bots) if (b.alive && b.vote === undefined && this.phase === "VOTING") this.vote(b, { targetId: null });
+    }
+  }
+
   private kick(p: Player, { playerId }: { playerId: string }) {
     this.requireHost(p);
     this.requirePhase("LOBBY");
     if (playerId === p.id) throw new GameError("Can't kick yourself");
     this.players.delete(playerId);
+    this.settings.forcedImpostorIds = this.settings.forcedImpostorIds.filter((id) => id !== playerId);
     this.send(playerId, { type: "event", event: "KICKED" });
   }
 
@@ -270,9 +326,12 @@ export class Game {
       throw new GameError("Too many impostors for this many players");
     }
     const taskStations = this.stations.filter((st) => st.kind === "task");
-    if (taskStations.length === 0) throw new GameError("Add at least one task station first");
+    if (taskStations.length === 0) throw new GameError("Add at least one sign first");
 
-    const impostorIds = new Set(shuffle(players).slice(0, s.impostors).map((pl) => pl.id));
+    const forced = s.forcedImpostorIds.filter((id) => this.players.has(id));
+    if (forced.length > s.impostors) throw new GameError(`Only ${s.impostors} impostor(s): pick fewer forced impostors`);
+    const randomPool = shuffle(players.filter((pl) => !forced.includes(pl.id)));
+    const impostorIds = new Set([...forced, ...randomPool.slice(0, s.impostors - forced.length).map((pl) => pl.id)]);
     for (const pl of players) {
       pl.role = impostorIds.has(pl.id) ? "impostor" : "crewmate";
       pl.alive = true;
@@ -302,17 +361,28 @@ export class Game {
     for (const pl of players) this.emit([pl.id], "ROLE_ASSIGNED", { role: pl.role });
   }
 
+  /**
+   * Signs are just places. Each player gets `tasksPerPlayer` different signs, and each of those gets a
+   * random mini-game from the host's rotation. Delivery also needs a second sign to carry the package to.
+   */
   private assignTasks(taskStations: Station[], fake: boolean): Task[] {
     const picks = shuffle(taskStations).slice(0, this.settings.tasksPerPlayer);
     return picks.map((st) => {
-      const type = st.taskType ?? "wiring";
-      const steps = [st.id];
-      if (type === "delivery") {
-        const others = taskStations.filter((o) => o.id !== st.id);
-        if (others.length) steps.push(shuffle(others)[0].id);
-      }
+      const others = taskStations.filter((o) => o.id !== st.id);
+      let types = this.settings.taskTypes.filter((t) => t !== "delivery" || others.length > 0);
+      if (types.length === 0) types = ["wiring"];
+      const type = types[Math.floor(Math.random() * types.length)];
+      const steps = type === "delivery" ? [st.id, shuffle(others)[0].id] : [st.id];
       return { id: shortId(4), type, steps, step: 0, completed: false, fake, startedAt: null };
     });
+  }
+
+  private get killRssi() {
+    return rssiAtDistance(this.settings.killDistanceM, this.settings.rssiAt1m, this.settings.pathLossExponent);
+  }
+
+  private get reportRssi() {
+    return rssiAtDistance(this.settings.reportDistanceM, this.settings.rssiAt1m, this.settings.pathLossExponent);
   }
 
   private ackRole(p: Player) {
@@ -365,14 +435,14 @@ export class Game {
   private killTargets(p: Player): Player[] {
     if (this.phase !== "PLAYING" || p.role !== "impostor" || !p.alive) return [];
     return [...this.players.values()].filter(
-      (t) => t.alive && t.role !== "impostor" && this.isNear(p, t, this.settings.killRssiThreshold),
+      (t) => t.alive && t.role !== "impostor" && this.isNear(p, t, this.killRssi),
     );
   }
 
   private nearbyBodies(p: Player): Player[] {
     if (this.phase !== "PLAYING" || !p.alive) return [];
     return [...this.players.values()].filter(
-      (b) => b.body && !b.body.reported && this.isNear(p, b, this.settings.reportRssiThreshold),
+      (b) => b.body && !b.body.reported && this.isNear(p, b, this.reportRssi),
     );
   }
 
@@ -481,7 +551,7 @@ export class Game {
       target = [...this.players.values()].find((pl) => pl.qrToken === qrToken);
     } else {
       target = targetId ? this.players.get(targetId) : undefined;
-      if (target && !this.isNear(p, target, this.settings.killRssiThreshold)) {
+      if (target && !this.isNear(p, target, this.killRssi)) {
         throw new GameError("Target not in range");
       }
     }
@@ -514,7 +584,7 @@ export class Game {
         body = [...this.players.values()].find((pl) => pl.qrToken === qrToken);
       } else {
         body = bodyId ? this.players.get(bodyId) : undefined;
-        if (body && !this.isNear(p, body, this.settings.reportRssiThreshold)) {
+        if (body && !this.isNear(p, body, this.reportRssi)) {
           throw new GameError("Body not in range");
         }
       }
@@ -786,6 +856,7 @@ export class Game {
   tick() {
     const now = this.now();
     const before = this.phase + this.phaseDeadline;
+    this.runBots();
     if (this.sabotage?.kind === "reactor" && now >= this.sabotage.deadline && this.phase === "PLAYING") {
       this.endGame("impostors", "Reactor meltdown");
     } else if (this.phaseDeadline !== null && now >= this.phaseDeadline) {
@@ -824,9 +895,11 @@ export class Game {
     const g = new Game(snap.code, snap.mapId, snap.stations, send, hooks, now);
     g.phase = snap.phase;
     g.hostId = snap.hostId;
-    g.settings = { ...DEFAULT_SETTINGS, ...snap.settings };
+    // Snapshots from older versions: drop settings that no longer exist, default the new ones.
+    const known = Object.fromEntries(Object.entries(snap.settings).filter(([k]) => k in DEFAULT_SETTINGS));
+    g.settings = { ...DEFAULT_SETTINGS, ...known };
     // Nobody is connected until their phone reconnects with its stored token.
-    for (const p of snap.players) g.players.set(p.id, { ...p, connected: false });
+    for (const p of snap.players) g.players.set(p.id, { ...p, connected: !!p.bot });
     g.meeting = snap.meeting ? { ...snap.meeting, arrived: new Set(snap.meeting.arrived) } : null;
     g.phaseDeadline = snap.phaseDeadline;
     g.result = snap.result;
@@ -886,6 +959,7 @@ export class Game {
         id: pl.id,
         name: pl.name,
         isHost: pl.id === this.hostId,
+        isBot: !!pl.bot,
         connected: pl.connected,
         alive: knowsDeath ? pl.alive : true,
         ejected: pl.ejected,
@@ -906,7 +980,7 @@ export class Game {
       phase: this.phase,
       phaseDeadline: this.phaseDeadline,
       hostId: this.hostId,
-      settings: this.settings,
+      settings: me.id === this.hostId ? this.settings : { ...this.settings, forcedImpostorIds: [] },
       stations: this.stations,
       players,
       taskProgress: this.taskProgress(),
@@ -969,6 +1043,7 @@ export interface PlayerView {
   id: string;
   name: string;
   isHost: boolean;
+  isBot: boolean;
   connected: boolean;
   alive: boolean;
   ejected: boolean;
