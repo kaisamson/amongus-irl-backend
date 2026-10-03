@@ -11,12 +11,14 @@
     "bots": "tsx scripts/bots.ts"
   },
   "dependencies": {
+    "ioredis": "^5.11.1",
     "tsx": "^4.23.15",
     "ws": "^8.22.0"
   },
   "devDependencies": {
     "@types/node": "^26.6.4",
     "@types/ws": "^8.18.2",
+    "ioredis-mock": "^8.13.1",
     "typescript": "^7.0.2"
   },
   "engines": {
