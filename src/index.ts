@@ -251,7 +251,8 @@ process.on("SIGTERM", () => void shutdown("SIGTERM"));
 process.on("SIGINT", () => void shutdown("SIGINT"));
 
 await store.init();
-server.listen(PORT, () => {
+// Bind IPv4 explicitly: Render's port detection looks for 0.0.0.0.
+server.listen(PORT, "0.0.0.0", () => {
   const ips = Object.values(networkInterfaces())
     .flat()
     .filter((i) => i && i.family === "IPv4" && !i.internal)

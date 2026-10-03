@@ -55,14 +55,28 @@ export class RedisStore implements Store {
   constructor(urlOrClient: string | Redis) {
     this.redis =
       typeof urlOrClient === "string"
-        ? new Redis(urlOrClient, { maxRetriesPerRequest: 3, lazyConnect: true })
+        ? // Connects immediately and keeps reconnecting (ioredis default retry strategy) if Redis goes away.
+          new Redis(urlOrClient, { maxRetriesPerRequest: 3 })
         : urlOrClient;
     this.redis.on("error", (err: Error) => console.error("Redis error:", err.message));
   }
 
-  async init() {
-    if (this.redis.status === "wait") await this.redis.connect();
-    await this.redis.ping();
+  /**
+   * Waits for Redis to answer. On Render the Key Value instance can still be starting when the
+   * web service boots, so retry for a while instead of crashing on the first refused connection.
+   */
+  async init(timeoutMs = 60_000) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      try {
+        await this.redis.ping();
+        return;
+      } catch (err) {
+        if (Date.now() >= deadline) throw err;
+        console.log(`Waiting for Redis: ${(err as Error).message}`);
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
+    }
   }
 
   async loadStations(mapId: string): Promise<Station[]> {
