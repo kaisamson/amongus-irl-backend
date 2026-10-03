@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Game, type Outbound } from "../src/game.ts";
+import { Game, rssiAtDistance, type Outbound } from "../src/game.ts";
 import type { Player, Station } from "../src/types.ts";
 
 function setup(n = 4, stations?: Partial<Station>[]) {
@@ -341,4 +341,41 @@ test("host can force who the impostor is, and only the host can see that", () =>
   }
   ctx.act(ctx.host, "update_settings", { forcedImpostorIds: [ctx.players[1].id, ctx.players[2].id] });
   assert.throws(() => ctx.act(ctx.host, "start_game"), /pick fewer/);
+});
+
+test("kill and report ranges are set in approximate meters", () => {
+  // Log-distance model: 1 m reads rssiAt1m; 10 m is 10·n dB weaker.
+  assert.equal(rssiAtDistance(1, -59, 2), -59);
+  assert.equal(rssiAtDistance(10, -59, 2), -79);
+
+  const ctx = setup(4);
+  ctx.act(ctx.host, "update_settings", { killDistanceM: 2, rssiAt1m: -60, pathLossExponent: 2, killCooldownSec: 0 });
+  const { impostor, crew } = startPlaying(ctx);
+  const cutoff = rssiAtDistance(2, -60, 2); // ≈ -66 dBm
+  ctx.act(crew[0], "proximity", { sightings: [{ token: impostor.bleToken, rssi: Math.floor(cutoff) - 3 }] }); // ~3 m
+  assert.deepEqual(ctx.game.viewFor(impostor.id).me.killTargets, []);
+  ctx.act(crew[0], "proximity", { sightings: [{ token: impostor.bleToken, rssi: Math.ceil(cutoff) + 3 }] }); // ~1.4 m
+  assert.deepEqual(ctx.game.viewFor(impostor.id).me.killTargets, [crew[0].id]);
+  assert.throws(() => ctx.act(ctx.host, "update_settings", { killDistanceM: 0 }), /Not allowed|greater than 0/);
+});
+
+test("all timers are host-adjustable and validated", () => {
+  const ctx = setup(4);
+  ctx.act(ctx.host, "update_settings", { roleRevealSec: 3, gatherTimeoutSec: 30, discussionSec: 0, votingSec: 20, resultSec: 2 });
+  assert.equal(ctx.game.settings.resultSec, 2);
+  assert.throws(() => ctx.act(ctx.host, "update_settings", { votingSec: -5 }), /negative/);
+  assert.throws(() => ctx.act(ctx.host, "update_settings", { votingSec: "10" }), /must be number/);
+  assert.throws(() => ctx.act(ctx.players[1], "update_settings", { votingSec: 10 }), /Only the host/);
+});
+
+test("restoring an old snapshot drops removed settings and defaults new ones", () => {
+  const ctx = setup(4);
+  const snap = JSON.parse(JSON.stringify(ctx.game.toSnapshot()));
+  delete snap.settings.killDistanceM;
+  delete snap.settings.taskTypes;
+  snap.settings.killRssiThreshold = -65;
+  const restored = Game.fromSnapshot(snap, () => {});
+  assert.equal(restored.settings.killDistanceM, 1.5);
+  assert.deepEqual(restored.settings.taskTypes, ["wiring", "upload", "sequence", "delivery"]);
+  assert.equal((restored.settings as any).killRssiThreshold, undefined);
 });

@@ -46,9 +46,14 @@ export interface Settings {
   revealRoleOnEject: boolean;
   emergencyMeetingsPerPlayer: number;
   emergencyCooldownSec: number;
-  /** RSSI (dBm) at or above which a sighting counts as "in kill range". Calibrate on real phones. */
-  killRssiThreshold: number;
-  reportRssiThreshold: number;
+  /** Approximate distance (m) within which an impostor can kill. Converted to an RSSI cutoff, see rssiAt1m. */
+  killDistanceM: number;
+  /** Approximate distance (m) within which a living player can report a body. */
+  reportDistanceM: number;
+  /** Calibration: smoothed RSSI (dBm) two phones read at 1 m apart. */
+  rssiAt1m: number;
+  /** Path-loss exponent: ~2 in open space, 2.5–3.5 indoors with people and walls in the way. */
+  pathLossExponent: number;
   /** How old a BLE sighting can be and still count. */
   proximityFreshSec: number;
   /** How long a verified checkpoint stays valid for doing tasks there. */
@@ -83,8 +88,10 @@ export const DEFAULT_SETTINGS: Settings = {
   revealRoleOnEject: true,
   emergencyMeetingsPerPlayer: 1,
   emergencyCooldownSec: 20,
-  killRssiThreshold: -65,
-  reportRssiThreshold: -75,
+  killDistanceM: 1.5,
+  reportDistanceM: 3,
+  rssiAt1m: -59,
+  pathLossExponent: 2.2,
   proximityFreshSec: 4,
   checkpointTtlSec: 180,
   qrFallback: true,

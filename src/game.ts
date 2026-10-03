@@ -80,6 +80,14 @@ function shuffle<T>(arr: T[]): T[] {
 
 const TASK_TYPES: TaskType[] = ["wiring", "upload", "sequence", "delivery"];
 
+/**
+ * Log-distance path-loss model: the RSSI expected at `distanceM`, given the RSSI measured at 1 m.
+ * BLE RSSI is noisy (bodies, pockets, orientation), so treat distances as approximate.
+ */
+export function rssiAtDistance(distanceM: number, rssiAt1m: number, pathLossExponent: number): number {
+  return rssiAt1m - 10 * pathLossExponent * Math.log10(Math.max(distanceM, 0.1));
+}
+
 function haversineM(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const R = 6371000;
   const toRad = (d: number) => (d * Math.PI) / 180;
@@ -236,6 +244,11 @@ export class Game {
       }
       const expected = typeof (DEFAULT_SETTINGS as any)[k];
       if (typeof v !== expected) throw new GameError(`Setting ${k} must be ${expected}`);
+      if (typeof v === "number" && !Number.isFinite(v)) throw new GameError(`Setting ${k} must be a number`);
+      if (typeof v === "number" && v < 0 && k !== "rssiAt1m") throw new GameError(`Setting ${k} can't be negative`);
+      if ((k === "killDistanceM" || k === "reportDistanceM" || k === "pathLossExponent") && (v as number) <= 0) {
+        throw new GameError(`Setting ${k} must be greater than 0`);
+      }
       (this.settings as any)[k] = v;
     }
   }
@@ -336,6 +349,14 @@ export class Game {
     });
   }
 
+  private get killRssi() {
+    return rssiAtDistance(this.settings.killDistanceM, this.settings.rssiAt1m, this.settings.pathLossExponent);
+  }
+
+  private get reportRssi() {
+    return rssiAtDistance(this.settings.reportDistanceM, this.settings.rssiAt1m, this.settings.pathLossExponent);
+  }
+
   private ackRole(p: Player) {
     this.requirePhase("ROLE_REVEAL");
     p.ackedRole = true;
@@ -386,14 +407,14 @@ export class Game {
   private killTargets(p: Player): Player[] {
     if (this.phase !== "PLAYING" || p.role !== "impostor" || !p.alive) return [];
     return [...this.players.values()].filter(
-      (t) => t.alive && t.role !== "impostor" && this.isNear(p, t, this.settings.killRssiThreshold),
+      (t) => t.alive && t.role !== "impostor" && this.isNear(p, t, this.killRssi),
     );
   }
 
   private nearbyBodies(p: Player): Player[] {
     if (this.phase !== "PLAYING" || !p.alive) return [];
     return [...this.players.values()].filter(
-      (b) => b.body && !b.body.reported && this.isNear(p, b, this.settings.reportRssiThreshold),
+      (b) => b.body && !b.body.reported && this.isNear(p, b, this.reportRssi),
     );
   }
 
@@ -502,7 +523,7 @@ export class Game {
       target = [...this.players.values()].find((pl) => pl.qrToken === qrToken);
     } else {
       target = targetId ? this.players.get(targetId) : undefined;
-      if (target && !this.isNear(p, target, this.settings.killRssiThreshold)) {
+      if (target && !this.isNear(p, target, this.killRssi)) {
         throw new GameError("Target not in range");
       }
     }
@@ -535,7 +556,7 @@ export class Game {
         body = [...this.players.values()].find((pl) => pl.qrToken === qrToken);
       } else {
         body = bodyId ? this.players.get(bodyId) : undefined;
-        if (body && !this.isNear(p, body, this.settings.reportRssiThreshold)) {
+        if (body && !this.isNear(p, body, this.reportRssi)) {
           throw new GameError("Body not in range");
         }
       }
@@ -845,7 +866,9 @@ export class Game {
     const g = new Game(snap.code, snap.mapId, snap.stations, send, hooks, now);
     g.phase = snap.phase;
     g.hostId = snap.hostId;
-    g.settings = { ...DEFAULT_SETTINGS, ...snap.settings };
+    // Snapshots from older versions: drop settings that no longer exist, default the new ones.
+    const known = Object.fromEntries(Object.entries(snap.settings).filter(([k]) => k in DEFAULT_SETTINGS));
+    g.settings = { ...DEFAULT_SETTINGS, ...known };
     // Nobody is connected until their phone reconnects with its stored token.
     for (const p of snap.players) g.players.set(p.id, { ...p, connected: false });
     g.meeting = snap.meeting ? { ...snap.meeting, arrived: new Set(snap.meeting.arrived) } : null;
