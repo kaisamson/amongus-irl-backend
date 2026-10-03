@@ -22,6 +22,46 @@ export type Outbound =
 
 export type Send = (playerId: string, msg: Outbound) => void;
 
+export interface GameHooks {
+  /** Host edited the venue map. */
+  onStationsChanged?: (stations: Station[]) => void;
+  /** Durable game state changed (not fired for high-frequency BLE reports). Used to snapshot to Redis. */
+  onChange?: () => void;
+  onGameOver?: (summary: GameSummary) => void;
+}
+
+export interface GameSummary {
+  code: string;
+  mapId: string;
+  startedAt: number;
+  endedAt: number;
+  winner: Winner;
+  winReason: string;
+  players: { name: string; role: Player["role"]; alive: boolean; ejected: boolean }[];
+}
+
+/** Everything needed to rebuild a live game after a server restart. BLE sightings are deliberately dropped. */
+export interface GameSnapshot {
+  v: 1;
+  code: string;
+  mapId: string;
+  phase: Phase;
+  hostId: string;
+  settings: Settings;
+  stations: Station[];
+  players: Player[];
+  meeting: (Omit<Meeting, "arrived"> & { arrived: string[] }) | null;
+  phaseDeadline: number | null;
+  result: VoteResult | null;
+  sabotage: Sabotage | null;
+  sabotageAvailableAt: number;
+  emergencyAvailableAt: number;
+  winner: Winner | null;
+  winReason: string | null;
+  startedAt: number;
+  lastActivity: number;
+}
+
 const MAX_PLAYERS = 15;
 
 function shortId(bytes = 4): string {
@@ -64,6 +104,7 @@ export class Game {
   emergencyAvailableAt = 0;
   winner: Winner | null = null;
   winReason: string | null = null;
+  startedAt = 0;
   lastActivity: number;
 
   private lastSent = new Map<string, string>();
@@ -73,7 +114,7 @@ export class Game {
     mapId: string,
     stations: Station[],
     private send: Send,
-    private onStationsChanged: (stations: Station[]) => void = () => {},
+    private hooks: GameHooks = {},
     readonly now: () => number = Date.now,
   ) {
     this.code = code;
@@ -161,6 +202,7 @@ export class Game {
       default: throw new GameError(`Unknown action: ${action}`);
     }
     this.broadcast();
+    if (action !== "proximity") this.hooks.onChange?.();
     return result;
   }
 
@@ -199,7 +241,7 @@ export class Game {
       photoId: s.photoId,
     };
     this.stations.push(station);
-    this.onStationsChanged(this.stations);
+    this.hooks.onStationsChanged?.(this.stations);
     return station;
   }
 
@@ -207,7 +249,7 @@ export class Game {
     this.requireHost(p);
     this.requirePhase("LOBBY");
     this.stations = this.stations.filter((s) => s.id !== stationId);
-    this.onStationsChanged(this.stations);
+    this.hooks.onStationsChanged?.(this.stations);
   }
 
   private kick(p: Player, { playerId }: { playerId: string }) {
@@ -253,6 +295,7 @@ export class Game {
     this.winner = null;
     this.winReason = null;
     this.phase = "ROLE_REVEAL";
+    this.startedAt = this.now();
     this.phaseDeadline = this.now() + s.roleRevealSec * 1000;
 
     this.emitAll("GAME_STARTED");
@@ -702,6 +745,15 @@ export class Game {
     this.sabotage = null;
     this.meeting = null;
     this.emitAll(winner === "crewmates" ? "CREWMATES_WIN" : "IMPOSTORS_WIN", { reason });
+    this.hooks.onGameOver?.({
+      code: this.code,
+      mapId: this.mapId,
+      startedAt: this.startedAt,
+      endedAt: this.now(),
+      winner,
+      winReason: reason,
+      players: [...this.players.values()].map((p) => ({ name: p.name, role: p.role, alive: p.alive, ejected: p.ejected })),
+    });
     return true;
   }
 
@@ -733,12 +785,59 @@ export class Game {
   /** Called periodically by the server. Handles deadlines and re-sends derived state (e.g. proximity). */
   tick() {
     const now = this.now();
+    const before = this.phase + this.phaseDeadline;
     if (this.sabotage?.kind === "reactor" && now >= this.sabotage.deadline && this.phase === "PLAYING") {
       this.endGame("impostors", "Reactor meltdown");
     } else if (this.phaseDeadline !== null && now >= this.phaseDeadline) {
       this.advance();
     }
     this.broadcast();
+    if (this.phase + this.phaseDeadline !== before) this.hooks.onChange?.();
+  }
+
+  // ------------------------------------------------------------ persistence
+
+  toSnapshot(): GameSnapshot {
+    return {
+      v: 1,
+      code: this.code,
+      mapId: this.mapId,
+      phase: this.phase,
+      hostId: this.hostId,
+      settings: this.settings,
+      stations: this.stations,
+      players: [...this.players.values()],
+      meeting: this.meeting ? { ...this.meeting, arrived: [...this.meeting.arrived] } : null,
+      phaseDeadline: this.phaseDeadline,
+      result: this.result,
+      sabotage: this.sabotage,
+      sabotageAvailableAt: this.sabotageAvailableAt,
+      emergencyAvailableAt: this.emergencyAvailableAt,
+      winner: this.winner,
+      winReason: this.winReason,
+      startedAt: this.startedAt,
+      lastActivity: this.lastActivity,
+    };
+  }
+
+  static fromSnapshot(snap: GameSnapshot, send: Send, hooks: GameHooks = {}, now: () => number = Date.now): Game {
+    const g = new Game(snap.code, snap.mapId, snap.stations, send, hooks, now);
+    g.phase = snap.phase;
+    g.hostId = snap.hostId;
+    g.settings = { ...DEFAULT_SETTINGS, ...snap.settings };
+    // Nobody is connected until their phone reconnects with its stored token.
+    for (const p of snap.players) g.players.set(p.id, { ...p, connected: false });
+    g.meeting = snap.meeting ? { ...snap.meeting, arrived: new Set(snap.meeting.arrived) } : null;
+    g.phaseDeadline = snap.phaseDeadline;
+    g.result = snap.result;
+    g.sabotage = snap.sabotage;
+    g.sabotageAvailableAt = snap.sabotageAvailableAt;
+    g.emergencyAvailableAt = snap.emergencyAvailableAt;
+    g.winner = snap.winner;
+    g.winReason = snap.winReason;
+    g.startedAt = snap.startedAt;
+    g.lastActivity = snap.lastActivity;
+    return g;
   }
 
   private touch() {

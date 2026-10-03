@@ -37,7 +37,7 @@ function createGame(mapId: string): Game {
     mapId,
     store.loadStations(mapId),
     (playerId, msg) => send(code, playerId, msg),
-    (stations) => store.saveStations(mapId, stations),
+    { onStationsChanged: (stations) => store.saveStations(mapId, stations) },
   );
   games.set(code, game);
   sockets.set(code, new Map());

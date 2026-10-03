@@ -8,7 +8,7 @@ function setup(n = 4, stations?: Partial<Station>[]) {
   const inbox = new Map<string, Outbound[]>();
   const game = new Game("TEST", "test", [], (id, msg) => {
     inbox.set(id, [...(inbox.get(id) ?? []), msg]);
-  }, () => {}, () => clock);
+  }, {}, () => clock);
   const players: Player[] = [];
   for (let i = 0; i < n; i++) players.push(game.addPlayer(`P${i}`));
   const host = players[0];
@@ -250,4 +250,55 @@ test("restart returns everyone to the lobby with stations kept", () => {
   assert.ok(ctx.players.every((p) => p.role === null && p.alive));
   ctx.act(ctx.host, "start_game");
   assert.equal(ctx.game.phase, "ROLE_REVEAL");
+});
+
+test("snapshot/restore mid-meeting: a restarted server continues the same game", () => {
+  const ctx = setup(4);
+  const { impostor, crew } = startPlaying(ctx);
+  ctx.game.settings.devSkipProximity = true;
+  ctx.advance(ctx.game.settings.killCooldownSec * 1000);
+  ctx.act(impostor, "kill", { targetId: crew[0].id });
+  ctx.act(crew[1], "report_body", { bodyId: crew[0].id });
+  ctx.act(ctx.host, "host_advance"); // gathering -> discussion
+
+  // Simulate a server restart: serialize like Redis would, rebuild in a fresh process.
+  const snap = JSON.parse(JSON.stringify(ctx.game.toSnapshot()));
+  assert.equal(snap.sightings, undefined, "BLE sightings are not persisted");
+  const sent: string[] = [];
+  const restored = Game.fromSnapshot(snap, (id, msg) => sent.push(`${id}:${msg.type}`), {}, ctx.game.now);
+
+  assert.equal(restored.phase, "MEETING");
+  assert.equal(restored.meeting!.stage, "discussion");
+  assert.ok([...restored.players.values()].every((p) => !p.connected));
+  // Phones reconnect with the tokens they stored before the restart.
+  assert.ok(restored.authenticate(crew[1].id, crew[1].token));
+  assert.equal(restored.players.get(crew[0].id)!.alive, false);
+  assert.equal(restored.viewFor(crew[1].id).me.role, "crewmate");
+
+  restored.handle(ctx.host.id, "host_advance", {}); // -> voting
+  for (const p of [impostor, crew[1], crew[2]]) restored.handle(p.id, "vote", { targetId: impostor.id });
+  assert.equal(restored.result!.ejectedId, impostor.id);
+});
+
+test("hooks: onChange fires for actions but not BLE reports; onGameOver gets a summary", () => {
+  let changes = 0;
+  let summary: any = null;
+  let clock = 1_000_000;
+  const game = new Game("HOOK", "m", [], () => {}, { onChange: () => changes++, onGameOver: (s) => (summary = s) }, () => clock);
+  const players = ["A", "B", "C", "D"].map((n) => game.addPlayer(n));
+  game.handle(players[0].id, "add_station", { name: "T", kind: "task" });
+  game.handle(players[0].id, "update_settings", { devSkipProximity: true, killCooldownSec: 0 });
+  game.handle(players[0].id, "start_game", {});
+  const before = changes;
+  game.handle(players[1].id, "proximity", { sightings: [] });
+  assert.equal(changes, before, "proximity reports are too frequent to snapshot");
+
+  for (const p of players) game.handle(p.id, "ack_role", {});
+  const imp = players.find((p) => p.role === "impostor")!;
+  for (const t of players.filter((p) => p.role === "crewmate").slice(0, 2)) {
+    game.handle(imp.id, "kill", { targetId: t.id });
+  }
+  assert.equal(summary.winner, "impostors");
+  assert.equal(summary.players.length, 4);
+  assert.ok(summary.endedAt >= summary.startedAt && summary.startedAt > 0);
 });
