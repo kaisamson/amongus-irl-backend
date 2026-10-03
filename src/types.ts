@@ -146,6 +146,8 @@ export interface Player {
   killCooldownUntil: number;
   vote: string | null | undefined; // undefined = not voted, null = skip
   connected: boolean;
+  /** Server-run bot for testing: acknowledges its role, gathers at meetings and votes skip. */
+  bot?: boolean;
 }
 
 export interface Sighting {

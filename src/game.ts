@@ -196,6 +196,7 @@ export class Game {
       case "add_station": result = this.addStation(p, payload); break;
       case "delete_station": result = this.deleteStation(p, payload); break;
       case "kick": result = this.kick(p, payload); break;
+      case "add_bot": result = this.addBot(p); break;
       case "start_game": result = this.startGame(p); break;
       case "ack_role": result = this.ackRole(p); break;
       case "proximity": result = this.proximity(p, payload); break;
@@ -277,6 +278,33 @@ export class Game {
     this.requirePhase("LOBBY");
     this.stations = this.stations.filter((s) => s.id !== stationId);
     this.hooks.onStationsChanged?.(this.stations);
+  }
+
+  /** Host-only testing aid: a server-run player so a lobby can reach the minimum with fewer phones. */
+  private addBot(p: Player) {
+    this.requireHost(p);
+    this.requirePhase("LOBBY");
+    const taken = new Set([...this.players.values()].map((pl) => pl.name.toLowerCase()));
+    let n = 1;
+    while (taken.has(`bot ${n}`)) n++;
+    const bot = this.addPlayer(`Bot ${n}`);
+    bot.bot = true;
+    bot.connected = true;
+    return { playerId: bot.id };
+  }
+
+  /** Bots do the bare minimum so games can progress: ack roles, gather, vote skip. They never kill. */
+  private runBots() {
+    const bots = [...this.players.values()].filter((pl) => pl.bot);
+    if (bots.length === 0) return;
+    if (this.phase === "ROLE_REVEAL") {
+      for (const b of bots) if (!b.ackedRole && this.phase === "ROLE_REVEAL") this.ackRole(b);
+    } else if (this.phase === "MEETING" && this.meeting?.stage === "gathering") {
+      for (const b of bots) if (b.alive) this.meeting.arrived.add(b.id);
+      this.maybeStartDiscussion();
+    } else if (this.phase === "VOTING") {
+      for (const b of bots) if (b.alive && b.vote === undefined && this.phase === "VOTING") this.vote(b, { targetId: null });
+    }
   }
 
   private kick(p: Player, { playerId }: { playerId: string }) {
@@ -828,6 +856,7 @@ export class Game {
   tick() {
     const now = this.now();
     const before = this.phase + this.phaseDeadline;
+    this.runBots();
     if (this.sabotage?.kind === "reactor" && now >= this.sabotage.deadline && this.phase === "PLAYING") {
       this.endGame("impostors", "Reactor meltdown");
     } else if (this.phaseDeadline !== null && now >= this.phaseDeadline) {
@@ -870,7 +899,7 @@ export class Game {
     const known = Object.fromEntries(Object.entries(snap.settings).filter(([k]) => k in DEFAULT_SETTINGS));
     g.settings = { ...DEFAULT_SETTINGS, ...known };
     // Nobody is connected until their phone reconnects with its stored token.
-    for (const p of snap.players) g.players.set(p.id, { ...p, connected: false });
+    for (const p of snap.players) g.players.set(p.id, { ...p, connected: !!p.bot });
     g.meeting = snap.meeting ? { ...snap.meeting, arrived: new Set(snap.meeting.arrived) } : null;
     g.phaseDeadline = snap.phaseDeadline;
     g.result = snap.result;
@@ -930,6 +959,7 @@ export class Game {
         id: pl.id,
         name: pl.name,
         isHost: pl.id === this.hostId,
+        isBot: !!pl.bot,
         connected: pl.connected,
         alive: knowsDeath ? pl.alive : true,
         ejected: pl.ejected,
@@ -1013,6 +1043,7 @@ export interface PlayerView {
   id: string;
   name: string;
   isHost: boolean;
+  isBot: boolean;
   connected: boolean;
   alive: boolean;
   ejected: boolean;

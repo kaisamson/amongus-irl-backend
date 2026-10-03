@@ -379,3 +379,44 @@ test("restoring an old snapshot drops removed settings and defaults new ones", (
   assert.deepEqual(restored.settings.taskTypes, ["wiring", "upload", "sequence", "delivery"]);
   assert.equal((restored.settings as any).killRssiThreshold, undefined);
 });
+
+test("host-added bots fill a lobby and keep the game moving", () => {
+  let clock = 1_000_000;
+  const game = new Game("BOTS", "m", [], () => {}, {}, () => clock);
+  const host = game.addPlayer("Host");
+  const friend = game.addPlayer("Friend");
+  game.handle(host.id, "add_station", { name: "Sign", kind: "task" });
+  assert.throws(() => game.handle(friend.id, "add_bot", {}), /Only the host/);
+  game.handle(host.id, "add_bot", {});
+  game.handle(host.id, "add_bot", {});
+  const bots = [...game.players.values()].filter((p) => p.bot);
+  assert.deepEqual(bots.map((b) => b.name), ["Bot 1", "Bot 2"]);
+  assert.ok(game.viewFor(host.id).players.filter((p) => p.isBot).every((p) => p.connected));
+
+  game.handle(host.id, "update_settings", { forcedImpostorIds: [host.id], devSkipCheckpoint: true });
+  game.handle(host.id, "start_game", {});
+  game.handle(host.id, "ack_role", {});
+  game.handle(friend.id, "ack_role", {});
+  game.tick(); // bots acknowledge
+  assert.equal(game.phase, "PLAYING");
+
+  // Restored bots stay "connected" (no phone will ever reconnect them).
+  const restored = Game.fromSnapshot(JSON.parse(JSON.stringify(game.toSnapshot())), () => {}, {}, () => clock);
+  assert.ok([...restored.players.values()].filter((p) => p.bot).every((p) => p.connected));
+
+  game.stations.push({ id: "btn", name: "Button", kind: "emergency", radiusM: 10 });
+  game.stations.push({ id: "caf", name: "Cafe", kind: "meeting", radiusM: 10 });
+  clock += game.settings.emergencyCooldownSec * 1000;
+  game.handle(friend.id, "call_emergency", {});
+  assert.equal(game.meeting!.stage, "gathering");
+  game.handle(host.id, "checkpoint", { stationId: "caf", method: "manual" });
+  game.handle(friend.id, "checkpoint", { stationId: "caf", method: "manual" });
+  game.tick(); // bots arrive -> discussion
+  assert.equal(game.meeting!.stage, "discussion");
+  game.handle(host.id, "host_advance", {});
+  game.handle(host.id, "vote", { targetId: friend.id });
+  game.handle(friend.id, "vote", { targetId: host.id });
+  game.tick(); // bots vote skip -> tally
+  assert.equal(game.phase, "RESULT");
+  assert.equal(game.result!.tallies.find((t) => t.targetId === null)!.count, 2);
+});
