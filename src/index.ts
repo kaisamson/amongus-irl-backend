@@ -1,25 +1,60 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { createReadStream } from "node:fs";
 import { networkInterfaces } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
-import { Game, type Outbound } from "./game.ts";
-import { MapStore } from "./store.ts";
+import { Game, type GameSnapshot, type Outbound } from "./game.ts";
+import { FileStore, RedisStore, type Store } from "./store.ts";
 import { GameError } from "./types.ts";
 
 const PORT = Number(process.env.PORT ?? 3000);
 const DATA_DIR = process.env.DATA_DIR ?? join(dirname(fileURLToPath(import.meta.url)), "..", "data");
 const GAME_TTL_MS = 6 * 60 * 60 * 1000;
+const SAVE_DEBOUNCE_MS = 250;
 
-const store = new MapStore(DATA_DIR);
+// REDIS_URL set (Render Key Value / Upstash) -> Redis. Otherwise local files, for development.
+const store: Store = process.env.REDIS_URL ? new RedisStore(process.env.REDIS_URL) : new FileStore(DATA_DIR);
 const games = new Map<string, Game>();
 /** code -> playerId -> socket */
 const sockets = new Map<string, Map<string, WebSocket>>();
+const pendingSaves = new Map<string, NodeJS.Timeout>();
 
 function send(code: string, playerId: string, msg: Outbound) {
   const ws = sockets.get(code)?.get(playerId);
   if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
+}
+
+function logError(what: string) {
+  return (err: unknown) => console.error(`${what} failed:`, (err as Error).message);
+}
+
+/** Coalesce bursts of changes into one snapshot write per game. */
+function scheduleSave(game: Game) {
+  if (pendingSaves.has(game.code)) return;
+  pendingSaves.set(
+    game.code,
+    setTimeout(() => {
+      pendingSaves.delete(game.code);
+      store.saveGame(game.toSnapshot(), GAME_TTL_MS / 1000).catch(logError(`Saving game ${game.code}`));
+    }, SAVE_DEBOUNCE_MS),
+  );
+}
+
+function register(game: Game) {
+  games.set(game.code, game);
+  sockets.set(game.code, new Map());
+}
+
+function hooksFor(code: () => string, mapId: string) {
+  return {
+    onStationsChanged: (stations: GameSnapshot["stations"]) =>
+      store.saveStations(mapId, stations).catch(logError("Saving stations")),
+    onChange: () => {
+      const game = games.get(code());
+      if (game) scheduleSave(game);
+    },
+    onGameOver: (summary: Parameters<Store["recordGame"]>[0]) => store.recordGame(summary).catch(logError("Recording game")),
+  };
 }
 
 function newCode(): string {
@@ -30,18 +65,40 @@ function newCode(): string {
   }
 }
 
-function createGame(mapId: string): Game {
-  const code = newCode();
-  const game = new Game(
-    code,
-    mapId,
-    store.loadStations(mapId),
-    (playerId, msg) => send(code, playerId, msg),
-    (stations) => store.saveStations(mapId, stations),
-  );
-  games.set(code, game);
-  sockets.set(code, new Map());
+async function createGame(mapId: string): Promise<Game> {
+  let code = newCode();
+  // A saved game may exist in the store without being loaded into this process yet.
+  while (await store.loadGame(code)) code = newCode();
+  const stations = await store.loadStations(mapId);
+  const game = new Game(code, mapId, stations, (playerId, msg) => send(code, playerId, msg), hooksFor(() => code, mapId));
+  register(game);
   return game;
+}
+
+/**
+ * Games load lazily from the store the first time a phone asks for them. That covers crash restarts,
+ * and Render's zero-downtime deploys: the new instance starts before the old one saves its final
+ * snapshot on SIGTERM, so reading at boot would miss the last moves.
+ */
+const loading = new Map<string, Promise<Game | undefined>>();
+async function getGame(code: string): Promise<Game | undefined> {
+  const live = games.get(code);
+  if (live) return live;
+  if (!/^[A-Z]{4}$/.test(code)) return undefined;
+  if (!loading.has(code)) {
+    loading.set(
+      code,
+      (async () => {
+        const snap = await store.loadGame(code);
+        if (!snap || Date.now() - snap.lastActivity > GAME_TTL_MS) return undefined;
+        const game = Game.fromSnapshot(snap, (playerId, msg) => send(code, playerId, msg), hooksFor(() => code, snap.mapId));
+        register(game);
+        console.log(`Restored game ${code} from ${store.kind} (${snap.phase})`);
+        return game;
+      })().finally(() => loading.delete(code)),
+    );
+  }
+  return loading.get(code);
 }
 
 // ---------------------------------------------------------------- HTTP
@@ -68,39 +125,42 @@ const server = createServer(async (req, res) => {
   const parts = url.pathname.split("/").filter(Boolean);
   try {
     if (req.method === "GET" && url.pathname === "/health") {
-      return json(res, 200, { ok: true, games: games.size });
+      return json(res, 200, { ok: true, games: games.size, store: store.kind });
     }
     // POST /games { name, mapId? } -> creates lobby, caller becomes host
     if (req.method === "POST" && parts.length === 1 && parts[0] === "games") {
       const body = await readJson(req);
-      const game = createGame(body.mapId || "default");
+      const game = await createGame(body.mapId || "default");
       const p = game.addPlayer(String(body.name ?? ""));
+      scheduleSave(game);
       return json(res, 200, { code: game.code, playerId: p.id, token: p.token });
     }
     // POST /games/:code/join { name }
     if (req.method === "POST" && parts.length === 3 && parts[0] === "games" && parts[2] === "join") {
-      const game = games.get(parts[1].toUpperCase());
+      const game = await getGame(parts[1].toUpperCase());
       if (!game) return json(res, 404, { error: "No game with that code" });
       const body = await readJson(req);
       const p = game.addPlayer(String(body.name ?? ""));
       game.broadcast();
+      scheduleSave(game);
       return json(res, 200, { code: game.code, playerId: p.id, token: p.token });
     }
     // POST /photos { jpegBase64 } -> { photoId }   (sign reference photos for stations)
     if (req.method === "POST" && url.pathname === "/photos") {
       const body = await readJson(req);
       if (typeof body.jpegBase64 !== "string") return json(res, 400, { error: "jpegBase64 required" });
-      return json(res, 200, { photoId: store.savePhoto(body.jpegBase64) });
+      return json(res, 200, { photoId: await store.savePhoto(Buffer.from(body.jpegBase64, "base64")) });
     }
     // GET /photos/:id.jpg
     if (req.method === "GET" && parts.length === 2 && parts[0] === "photos") {
-      const path = store.photoPath(parts[1].replace(/\.jpg$/, ""));
-      if (!path) return json(res, 404, { error: "Not found" });
+      const jpeg = await store.getPhoto(parts[1].replace(/\.jpg$/, ""));
+      if (!jpeg) return json(res, 404, { error: "Not found" });
       res.writeHead(200, { "content-type": "image/jpeg", "cache-control": "public, max-age=86400" });
-      return createReadStream(path).pipe(res);
+      return res.end(jpeg);
     }
     json(res, 404, { error: "Not found" });
   } catch (err) {
+    if (!(err instanceof GameError)) console.error(err);
     json(res, err instanceof GameError ? 400 : 500, { error: (err as Error).message });
   }
 });
@@ -112,10 +172,11 @@ const server = createServer(async (req, res) => {
 
 const wss = new WebSocketServer({ server, path: "/ws", maxPayload: 2 * 1024 * 1024 });
 
-wss.on("connection", (ws, req) => {
+wss.on("connection", async (ws, req) => {
   const url = new URL(req.url ?? "/", "http://localhost");
   const code = (url.searchParams.get("code") ?? "").toUpperCase();
-  const game = games.get(code);
+  // Clients send nothing until they receive their first snapshot, so awaiting here drops no messages.
+  const game = await getGame(code).catch(() => undefined);
   const player = game?.authenticate(url.searchParams.get("playerId") ?? "", url.searchParams.get("token") ?? "");
   if (!game || !player) {
     ws.close(4001, "Unknown game or player");
@@ -159,25 +220,42 @@ wss.on("connection", (ws, req) => {
   });
 });
 
+// ---------------------------------------------------------------- lifecycle
+
 // Timers + periodic re-evaluation of proximity-derived state.
-setInterval(() => {
+const ticker = setInterval(() => {
   const now = Date.now();
   for (const [code, game] of games) {
     if (now - game.lastActivity > GAME_TTL_MS) {
       games.delete(code);
       sockets.get(code)?.forEach((ws) => ws.close(4002, "Game expired"));
       sockets.delete(code);
+      store.deleteGame(code).catch(logError(`Deleting game ${code}`));
       continue;
     }
     game.tick();
   }
 }, 500);
 
+/** Render sends SIGTERM before every deploy/restart: write every live game so phones reconnect into it. */
+async function shutdown(signal: string) {
+  console.log(`${signal}: saving ${games.size} game(s) and shutting down`);
+  clearInterval(ticker);
+  for (const t of pendingSaves.values()) clearTimeout(t);
+  await Promise.allSettled([...games.values()].map((g) => store.saveGame(g.toSnapshot(), GAME_TTL_MS / 1000)));
+  wss.clients.forEach((ws) => ws.close(1012, "Server restarting"));
+  await store.close();
+  process.exit(0);
+}
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
+process.on("SIGINT", () => void shutdown("SIGINT"));
+
+await store.init();
 server.listen(PORT, () => {
   const ips = Object.values(networkInterfaces())
     .flat()
     .filter((i) => i && i.family === "IPv4" && !i.internal)
     .map((i) => i!.address);
-  console.log(`IRL Among Us server on port ${PORT}`);
-  for (const ip of ips) console.log(`  phones on this Wi-Fi: http://${ip}:${PORT}`);
+  console.log(`IRL Among Us server on port ${PORT} (store: ${store.kind})`);
+  for (const ip of ips) console.log(`  same Wi-Fi: http://${ip}:${PORT}`);
 });
