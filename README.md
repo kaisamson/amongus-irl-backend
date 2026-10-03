@@ -40,6 +40,19 @@ token. SIGTERM flushes every snapshot first.
 Use paid plans for playtests: free web services sleep (30–60s cold start) and free Key Value has no persistence.
 Run **one instance** only, since live games live in that process's memory. Avoid deploying mid-game.
 
+## Host settings worth knowing
+
+All settings live in `src/types.ts` (`DEFAULT_SETTINGS`) and are changed by the host in the lobby.
+
+- **Signs and tasks:** stations of kind `task` are just signs (photo + location). At game start each player gets
+  `tasksPerPlayer` different signs, each with a random mini-game from `taskTypes`.
+- **Kill / report range:** `killDistanceM` and `reportDistanceM` are approximate meters, converted to RSSI cutoffs
+  with `rssi(d) = rssiAt1m - 10 · pathLossExponent · log10(d)`. Calibrate `rssiAt1m` by holding two phones 1 m apart
+  (the app's Bluetooth tab shows the reading).
+- **Timers:** `roleRevealSec`, `gatherTimeoutSec`, `discussionSec`, `votingSec`, `resultSec`, `killCooldownSec`,
+  `emergencyCooldownSec`, `sabotageCooldownSec`, `reactorSec`, `uploadSec`.
+- **Testing:** `forcedImpostorIds` (only the host sees it), `devSkipProximity`, `devSkipCheckpoint`, `minPlayers`.
+
 ## API
 
 | | |
