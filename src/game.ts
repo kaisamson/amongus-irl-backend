@@ -12,6 +12,7 @@ import {
   type Sighting,
   type Station,
   type Task,
+  type TaskType,
   type VoteResult,
   type Winner,
 } from "./types.ts";
@@ -76,6 +77,8 @@ function shuffle<T>(arr: T[]): T[] {
   }
   return a;
 }
+
+const TASK_TYPES: TaskType[] = ["wiring", "upload", "sequence", "delivery"];
 
 function haversineM(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const R = 6371000;
@@ -219,6 +222,13 @@ export class Game {
     this.requirePhase("LOBBY");
     for (const [k, v] of Object.entries(patch ?? {})) {
       if (!(k in DEFAULT_SETTINGS)) throw new GameError(`Unknown setting: ${k}`);
+      if (k === "taskTypes") {
+        if (!Array.isArray(v) || v.length === 0 || !v.every((t) => TASK_TYPES.includes(t as TaskType))) {
+          throw new GameError("Pick at least one task type");
+        }
+        this.settings.taskTypes = [...new Set(v as TaskType[])];
+        continue;
+      }
       const expected = typeof (DEFAULT_SETTINGS as any)[k];
       if (typeof v !== expected) throw new GameError(`Setting ${k} must be ${expected}`);
       (this.settings as any)[k] = v;
@@ -233,7 +243,6 @@ export class Game {
       id: shortId(4),
       name: String(s.name).slice(0, 40),
       kind: s.kind,
-      taskType: s.kind === "task" ? (s.taskType ?? "wiring") : undefined,
       lat: typeof s.lat === "number" ? s.lat : undefined,
       lng: typeof s.lng === "number" ? s.lng : undefined,
       radiusM: typeof s.radiusM === "number" ? s.radiusM : 15,
@@ -270,7 +279,7 @@ export class Game {
       throw new GameError("Too many impostors for this many players");
     }
     const taskStations = this.stations.filter((st) => st.kind === "task");
-    if (taskStations.length === 0) throw new GameError("Add at least one task station first");
+    if (taskStations.length === 0) throw new GameError("Add at least one sign first");
 
     const impostorIds = new Set(shuffle(players).slice(0, s.impostors).map((pl) => pl.id));
     for (const pl of players) {
@@ -302,15 +311,18 @@ export class Game {
     for (const pl of players) this.emit([pl.id], "ROLE_ASSIGNED", { role: pl.role });
   }
 
+  /**
+   * Signs are just places. Each player gets `tasksPerPlayer` different signs, and each of those gets a
+   * random mini-game from the host's rotation. Delivery also needs a second sign to carry the package to.
+   */
   private assignTasks(taskStations: Station[], fake: boolean): Task[] {
     const picks = shuffle(taskStations).slice(0, this.settings.tasksPerPlayer);
     return picks.map((st) => {
-      const type = st.taskType ?? "wiring";
-      const steps = [st.id];
-      if (type === "delivery") {
-        const others = taskStations.filter((o) => o.id !== st.id);
-        if (others.length) steps.push(shuffle(others)[0].id);
-      }
+      const others = taskStations.filter((o) => o.id !== st.id);
+      let types = this.settings.taskTypes.filter((t) => t !== "delivery" || others.length > 0);
+      if (types.length === 0) types = ["wiring"];
+      const type = types[Math.floor(Math.random() * types.length)];
+      const steps = type === "delivery" ? [st.id, shuffle(others)[0].id] : [st.id];
       return { id: shortId(4), type, steps, step: 0, completed: false, fake, startedAt: null };
     });
   }

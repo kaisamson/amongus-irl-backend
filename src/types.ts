@@ -21,6 +21,7 @@ export interface Station {
   id: string;
   name: string;
   kind: StationKind;
+  /** Legacy: older saved maps set a task per sign. Ignored; tasks are assigned randomly at game start. */
   taskType?: TaskType;
   lat?: number;
   lng?: number;
@@ -58,6 +59,8 @@ export interface Settings {
   /** Testing only: allow tasks/meetings without verifying a checkpoint first. */
   devSkipCheckpoint: boolean;
   ghostTasks: boolean;
+  /** Mini-games in rotation. Each sign assigned to a player gets a random one of these. */
+  taskTypes: TaskType[];
   uploadSec: number;
   sabotageCooldownSec: number;
   reactorSec: number;
@@ -86,6 +89,7 @@ export const DEFAULT_SETTINGS: Settings = {
   devSkipProximity: false,
   devSkipCheckpoint: false,
   ghostTasks: true,
+  taskTypes: ["wiring", "upload", "sequence", "delivery"],
   uploadSec: 8,
   sabotageCooldownSec: 45,
   reactorSec: 45,

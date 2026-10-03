@@ -13,8 +13,8 @@ function setup(n = 4, stations?: Partial<Station>[]) {
   for (let i = 0; i < n; i++) players.push(game.addPlayer(`P${i}`));
   const host = players[0];
   const defs = stations ?? [
-    { name: "Electrical", kind: "task", taskType: "wiring" },
-    { name: "Comms", kind: "task", taskType: "upload" },
+    { name: "Electrical", kind: "task" },
+    { name: "Comms", kind: "task" },
     { name: "Cafeteria", kind: "meeting" },
   ];
   for (const s of defs) game.handle(host.id, "add_station", s);
@@ -110,9 +110,10 @@ test("hidden information: crewmates never see other roles", () => {
 
 test("tasks require a checkpoint, upload needs the full duration, fake tasks don't count", () => {
   const ctx = setup(4, [
-    { name: "Comms", kind: "task", taskType: "upload" },
+    { name: "Comms", kind: "task" },
   ]);
   ctx.game.settings.tasksPerPlayer = 1;
+  ctx.game.settings.taskTypes = ["upload"];
   const { impostor, crew } = startPlaying(ctx);
   const comms = ctx.station("Comms");
   const [a] = crew;
@@ -141,7 +142,7 @@ test("tasks require a checkpoint, upload needs the full duration, fake tasks don
 });
 
 test("GPS checkpoints are geofenced on the server", () => {
-  const ctx = setup(4, [{ name: "Fountain", kind: "task", taskType: "wiring", lat: 49.2781, lng: -122.9199, radiusM: 20 }]);
+  const ctx = setup(4, [{ name: "Fountain", kind: "task", lat: 49.2781, lng: -122.9199, radiusM: 20 }]);
   const { crew } = startPlaying(ctx);
   const id = ctx.station("Fountain").id;
   assert.throws(() => ctx.act(crew[0], "checkpoint", { stationId: id, method: "gps", lat: 49.2790, lng: -122.9199 }), /Too far/);
@@ -150,10 +151,10 @@ test("GPS checkpoints are geofenced on the server", () => {
 
 test("delivery task needs both stations in order; all tasks done -> crewmates win", () => {
   const ctx = setup(4, [
-    { name: "A", kind: "task", taskType: "delivery" },
-    { name: "B", kind: "task", taskType: "wiring" },
+    { name: "A", kind: "task" },
+    { name: "B", kind: "task" },
   ]);
-  ctx.game.settings.devSkipCheckpoint = false;
+  ctx.game.settings.taskTypes = ["delivery", "wiring"];
   const { crew } = startPlaying(ctx);
   for (const c of crew) {
     for (const t of c.tasks) {
@@ -301,4 +302,25 @@ test("hooks: onChange fires for actions but not BLE reports; onGameOver gets a s
   assert.equal(summary.winner, "impostors");
   assert.equal(summary.players.length, 4);
   assert.ok(summary.endedAt >= summary.startedAt && summary.startedAt > 0);
+});
+
+test("signs get random mini-games from the host's rotation; delivery needs a second sign", () => {
+  const ctx = setup(6, [{ name: "Only sign", kind: "task" }]);
+  ctx.act(ctx.host, "update_settings", { taskTypes: ["delivery", "sequence"] });
+  startPlaying(ctx);
+  for (const p of ctx.players) {
+    assert.ok(p.tasks.every((t) => t.type === "sequence" && t.steps.length === 1), "one sign: delivery is impossible");
+  }
+
+  const many = setup(6, [1, 2, 3, 4].map((i) => ({ name: `Sign ${i}`, kind: "task" as const })));
+  many.act(many.host, "update_settings", { taskTypes: ["wiring", "delivery"], tasksPerPlayer: 3 });
+  startPlaying(many);
+  const all = many.players.flatMap((p) => p.tasks);
+  assert.ok(all.every((t) => t.type === "wiring" || t.type === "delivery"));
+  for (const t of all.filter((t) => t.type === "delivery")) {
+    assert.equal(t.steps.length, 2);
+    assert.notEqual(t.steps[0], t.steps[1]);
+  }
+  for (const p of many.players) assert.equal(new Set(p.tasks.map((t) => t.steps[0])).size, 3, "different sign per task");
+  assert.throws(() => many.act(many.host, "update_settings", { taskTypes: [] }), /Not allowed|at least one/);
 });
