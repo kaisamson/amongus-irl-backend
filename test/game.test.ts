@@ -324,3 +324,21 @@ test("signs get random mini-games from the host's rotation; delivery needs a sec
   for (const p of many.players) assert.equal(new Set(p.tasks.map((t) => t.steps[0])).size, 3, "different sign per task");
   assert.throws(() => many.act(many.host, "update_settings", { taskTypes: [] }), /Not allowed|at least one/);
 });
+
+test("host can force who the impostor is, and only the host can see that", () => {
+  const ctx = setup(5);
+  const chosen = ctx.players[3];
+  ctx.act(ctx.host, "update_settings", { forcedImpostorIds: [chosen.id] });
+  assert.deepEqual(ctx.game.viewFor(ctx.host.id).settings.forcedImpostorIds, [chosen.id]);
+  for (const p of ctx.players.slice(1)) assert.deepEqual(ctx.game.viewFor(p.id).settings.forcedImpostorIds, []);
+  assert.throws(() => ctx.act(ctx.host, "update_settings", { forcedImpostorIds: ["nope"] }), /Unknown player/);
+
+  for (let round = 0; round < 5; round++) {
+    ctx.act(ctx.host, "start_game");
+    assert.equal(chosen.role, "impostor");
+    assert.equal(ctx.players.filter((p) => p.role === "impostor").length, 1);
+    ctx.act(ctx.host, "restart");
+  }
+  ctx.act(ctx.host, "update_settings", { forcedImpostorIds: [ctx.players[1].id, ctx.players[2].id] });
+  assert.throws(() => ctx.act(ctx.host, "start_game"), /pick fewer/);
+});

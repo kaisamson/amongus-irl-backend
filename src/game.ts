@@ -229,6 +229,11 @@ export class Game {
         this.settings.taskTypes = [...new Set(v as TaskType[])];
         continue;
       }
+      if (k === "forcedImpostorIds") {
+        if (!Array.isArray(v) || !v.every((id) => this.players.has(id))) throw new GameError("Unknown player");
+        this.settings.forcedImpostorIds = [...new Set(v as string[])];
+        continue;
+      }
       const expected = typeof (DEFAULT_SETTINGS as any)[k];
       if (typeof v !== expected) throw new GameError(`Setting ${k} must be ${expected}`);
       (this.settings as any)[k] = v;
@@ -266,6 +271,7 @@ export class Game {
     this.requirePhase("LOBBY");
     if (playerId === p.id) throw new GameError("Can't kick yourself");
     this.players.delete(playerId);
+    this.settings.forcedImpostorIds = this.settings.forcedImpostorIds.filter((id) => id !== playerId);
     this.send(playerId, { type: "event", event: "KICKED" });
   }
 
@@ -281,7 +287,10 @@ export class Game {
     const taskStations = this.stations.filter((st) => st.kind === "task");
     if (taskStations.length === 0) throw new GameError("Add at least one sign first");
 
-    const impostorIds = new Set(shuffle(players).slice(0, s.impostors).map((pl) => pl.id));
+    const forced = s.forcedImpostorIds.filter((id) => this.players.has(id));
+    if (forced.length > s.impostors) throw new GameError(`Only ${s.impostors} impostor(s): pick fewer forced impostors`);
+    const randomPool = shuffle(players.filter((pl) => !forced.includes(pl.id)));
+    const impostorIds = new Set([...forced, ...randomPool.slice(0, s.impostors - forced.length).map((pl) => pl.id)]);
     for (const pl of players) {
       pl.role = impostorIds.has(pl.id) ? "impostor" : "crewmate";
       pl.alive = true;
@@ -918,7 +927,7 @@ export class Game {
       phase: this.phase,
       phaseDeadline: this.phaseDeadline,
       hostId: this.hostId,
-      settings: this.settings,
+      settings: me.id === this.hostId ? this.settings : { ...this.settings, forcedImpostorIds: [] },
       stations: this.stations,
       players,
       taskProgress: this.taskProgress(),

@@ -61,6 +61,8 @@ export interface Settings {
   ghostTasks: boolean;
   /** Mini-games in rotation. Each sign assigned to a player gets a random one of these. */
   taskTypes: TaskType[];
+  /** Testing: players who will be impostor (the rest of the impostor slots are random). Only the host sees this. */
+  forcedImpostorIds: string[];
   uploadSec: number;
   sabotageCooldownSec: number;
   reactorSec: number;
@@ -90,6 +92,7 @@ export const DEFAULT_SETTINGS: Settings = {
   devSkipCheckpoint: false,
   ghostTasks: true,
   taskTypes: ["wiring", "upload", "sequence", "delivery"],
+  forcedImpostorIds: [],
   uploadSec: 8,
   sabotageCooldownSec: 45,
   reactorSec: 45,
