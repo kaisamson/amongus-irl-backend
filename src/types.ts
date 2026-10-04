@@ -12,7 +12,7 @@ export type Role = "crewmate" | "impostor";
 /** What a physical checkpoint is used for. */
 export type StationKind = "task" | "meeting" | "emergency" | "reactor" | "electrical";
 
-export type TaskType = "wiring" | "upload" | "sequence" | "delivery";
+export type TaskType = "wiring" | "upload" | "sequence" | "delivery" | "swipe" | "shields" | "o2" | "scan" | "divert";
 
 /** How a player proved they were at a checkpoint. */
 export type CheckpointMethod = "sign" | "qr" | "gps" | "manual";
@@ -69,6 +69,8 @@ export interface Settings {
   /** Testing: players who will be impostor (the rest of the impostor slots are random). Only the host sees this. */
   forcedImpostorIds: string[];
   uploadSec: number;
+  /** Submit Scan: seconds the player must stay at the scanner. */
+  scanSec: number;
   sabotageCooldownSec: number;
   reactorSec: number;
   reactorWindowSec: number;
@@ -98,9 +100,10 @@ export const DEFAULT_SETTINGS: Settings = {
   devSkipProximity: false,
   devSkipCheckpoint: false,
   ghostTasks: true,
-  taskTypes: ["wiring", "upload", "sequence", "delivery"],
+  taskTypes: ["wiring", "upload", "sequence", "delivery", "swipe", "shields", "o2", "scan", "divert"],
   forcedImpostorIds: [],
   uploadSec: 8,
+  scanSec: 10,
   sabotageCooldownSec: 45,
   reactorSec: 45,
   reactorWindowSec: 10,
@@ -109,7 +112,7 @@ export const DEFAULT_SETTINGS: Settings = {
 export interface Task {
   id: string;
   type: TaskType;
-  /** Station IDs to visit in order. Most tasks have one step; delivery has two. */
+  /** Station IDs to visit in order. Most tasks have one step; delivery and divert have two. */
   steps: string[];
   step: number;
   completed: boolean;

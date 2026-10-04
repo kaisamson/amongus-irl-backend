@@ -78,7 +78,9 @@ function shuffle<T>(arr: T[]): T[] {
   return a;
 }
 
-const TASK_TYPES: TaskType[] = ["wiring", "upload", "sequence", "delivery"];
+const TASK_TYPES: TaskType[] = ["wiring", "upload", "sequence", "delivery", "swipe", "shields", "o2", "scan", "divert"];
+/** Tasks done at two different signs: pick up/drop off, divert/accept power. */
+const TWO_STEP_TYPES: TaskType[] = ["delivery", "divert"];
 
 /**
  * Log-distance path-loss model: the RSSI expected at `distanceM`, given the RSSI measured at 1 m.
@@ -363,16 +365,16 @@ export class Game {
 
   /**
    * Signs are just places. Each player gets `tasksPerPlayer` different signs, and each of those gets a
-   * random mini-game from the host's rotation. Delivery also needs a second sign to carry the package to.
+   * random mini-game from the host's rotation. Delivery and Divert Power also need a second sign to finish at.
    */
   private assignTasks(taskStations: Station[], fake: boolean): Task[] {
     const picks = shuffle(taskStations).slice(0, this.settings.tasksPerPlayer);
     return picks.map((st) => {
       const others = taskStations.filter((o) => o.id !== st.id);
-      let types = this.settings.taskTypes.filter((t) => t !== "delivery" || others.length > 0);
+      let types = this.settings.taskTypes.filter((t) => !TWO_STEP_TYPES.includes(t) || others.length > 0);
       if (types.length === 0) types = ["wiring"];
       const type = types[Math.floor(Math.random() * types.length)];
-      const steps = type === "delivery" ? [st.id, shuffle(others)[0].id] : [st.id];
+      const steps = TWO_STEP_TYPES.includes(type) ? [st.id, shuffle(others)[0].id] : [st.id];
       return { id: shortId(4), type, steps, step: 0, completed: false, fake, startedAt: null };
     });
   }
@@ -505,11 +507,14 @@ export class Game {
     this.requireCanDoTasks(p);
     const task = this.findTask(p, taskId);
     this.requireAtStation(p, task.steps[task.step]);
-    if (task.type === "upload" && task.step === 0) {
-      // Upload must run on-site for the full duration; small allowance for network latency.
-      const needed = this.settings.uploadSec * 1000 - 1500;
+    const timedSec = task.type === "upload" ? this.settings.uploadSec : task.type === "scan" ? this.settings.scanSec : null;
+    if (timedSec !== null && task.step === 0) {
+      // Upload and Submit Scan must run on-site for the full duration; small allowance for network latency.
+      const needed = timedSec * 1000 - 1500;
       if (task.startedAt === null || this.now() - task.startedAt < needed) {
-        throw new GameError("Upload interrupted. Stay at the station until it finishes");
+        throw new GameError(task.type === "scan"
+          ? "Scan interrupted. Stand still at the scanner until it finishes"
+          : "Upload interrupted. Stay at the station until it finishes");
       }
     }
     task.startedAt = null;
