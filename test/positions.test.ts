@@ -14,7 +14,7 @@ function player(id: string, extra: Partial<Player> = {}): Player {
 }
 
 function report(lat: number, lng: number, accuracyM: number, extra: Partial<PositionReport> = {}): PositionReport {
-  return { lat, lng, accuracyM, at: now, roomId: null, room: null, levelDelta: 0, sources: ["gps"], ...extra };
+  return { lat, lng, accuracyM, at: now, roomId: null, room: null, buildingId: null, floorId: null, levelDelta: 0, sources: ["gps"], ...extra };
 }
 
 function fuse(players: Player[], reports: [string, PositionReport][], sightings: [string, string, number][] = [], stations: Station[] = []) {

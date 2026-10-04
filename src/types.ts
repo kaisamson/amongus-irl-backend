@@ -19,6 +19,9 @@ export type TaskType = "wiring" | "upload" | "sequence" | "delivery" | "swipe" |
 export type CheckpointMethod = "sign" | "qr" | "gps" | "manual";
 
 export interface Station {
+  /** SFU building (e.g. "SUB") and floor id (e.g. "2000") the sign is on, from the campus map. */
+  buildingId?: string;
+  floorId?: string;
   id: string;
   name: string;
   kind: StationKind;

@@ -19,6 +19,9 @@ export interface PositionReport {
   at: number;
   roomId: string | null;
   room: string | null;
+  /** SFU building and floor the phone thinks it's on (campus map), when known. */
+  buildingId: string | null;
+  floorId: string | null;
   /** Floors up (+) or down (-) from the last sign the phone fixed on, from the barometer. */
   levelDelta: number;
   /** What fed the estimate, e.g. ["sign", "steps", "gps"]. */
@@ -34,6 +37,8 @@ export interface PlayerPosition {
   at: number;
   roomId: string | null;
   room: string | null;
+  buildingId: string | null;
+  floorId: string | null;
   levelDelta: number;
   sources: string[];
   /** No fresh input for a while: the radius has grown and the dot should look faded. */
@@ -79,6 +84,8 @@ export function parseReport(payload: any, now: number): PositionReport {
     at: now,
     roomId: text(payload.roomId, 32),
     room: text(payload.room, 60),
+    buildingId: text(payload.buildingId, 12),
+    floorId: text(payload.floorId, 12),
     levelDelta: finite(payload.levelDelta) ? Math.max(-9, Math.min(9, Math.round(payload.levelDelta))) : 0,
     sources: Array.isArray(payload.sources)
       ? payload.sources.filter((s: unknown) => typeof s === "string").slice(0, 8).map((s: string) => s.slice(0, 16))
@@ -131,6 +138,8 @@ export function fusePositions(input: FuseInput): PlayerPosition[] {
           at: cp.at,
           roomId: null,
           room: null,
+          buildingId: signFix.buildingId ?? null,
+          floorId: signFix.floorId ?? null,
           levelDelta: 0,
           sources: ["sign"],
           variance,
@@ -157,6 +166,7 @@ export function fusePositions(input: FuseInput): PlayerPosition[] {
       // "Within about d of them": their uncertainty, plus the distance and how unsure BLE is about it.
       const measVar = anchor.variance + d ** 2 + (0.5 * d + 1) ** 2;
       if (!est) {
+        // Standing next to them: same building and floor too.
         est = { ...anchor, playerId: p.id, variance: measVar, roomId: null, room: null, levelDelta: 0, sources: ["nearby"] };
         continue;
       }
@@ -234,6 +244,8 @@ export class BotWalker {
         at: now,
         roomId: null,
         room: null,
+        buildingId: target.buildingId ?? null,
+        floorId: target.floorId ?? null,
         levelDelta: 0,
         sources: ["bot"],
       });

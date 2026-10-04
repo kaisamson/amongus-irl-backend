@@ -89,6 +89,8 @@ export function buildStation(s: Partial<Station>, extra: Partial<Station> = {}):
     radiusM: typeof s.radiusM === "number" ? s.radiusM : 15,
     signText: typeof s.signText === "string" ? s.signText.trim().slice(0, 60) || undefined : undefined,
     photoId: typeof s.photoId === "string" ? s.photoId : undefined,
+    buildingId: typeof s.buildingId === "string" && s.buildingId.trim() ? s.buildingId.trim().slice(0, 12) : undefined,
+    floorId: typeof s.floorId === "string" && s.floorId.trim() ? s.floorId.trim().slice(0, 12) : undefined,
     ...extra,
   };
 }
