@@ -269,6 +269,7 @@ export class Game {
       case "delete_station": result = this.deleteStation(p, payload); break;
       case "move_station": result = this.moveStation(p, payload); break;
       case "kick": result = this.kick(p, payload); break;
+      case "leave": result = this.leave(p); break;
       case "set_color": result = this.setColor(p, payload); break;
       case "set_face": result = this.setFace(p, payload); break;
       case "add_bot": result = this.addBot(p); break;
@@ -288,6 +289,7 @@ export class Game {
       case "sabotage": result = this.startSabotage(p, payload); break;
       case "fix_sabotage": result = this.fixSabotage(p, payload); break;
       case "host_advance": result = this.hostAdvance(p); break;
+      case "start_discussion": result = this.startDiscussionNow(p); break;
       case "restart": result = this.restart(p); break;
       default: throw new GameError(`Unknown action: ${action}`);
     }
@@ -508,6 +510,16 @@ export class Game {
     this.settings.forcedImpostorIds = this.settings.forcedImpostorIds.filter((id) => id !== playerId);
     this.stations = this.stations.filter((st) => st.addedBy !== playerId);
     this.send(playerId, { type: "event", event: "KICKED" });
+  }
+
+  /** Quit from the lobby: the player is gone (name free to rejoin), with their signs; the host passes on. */
+  private leave(p: Player) {
+    this.requirePhase("LOBBY");
+    this.players.delete(p.id);
+    this.settings.forcedImpostorIds = this.settings.forcedImpostorIds.filter((id) => id !== p.id);
+    this.stations = this.stations.filter((st) => st.addedBy !== p.id);
+    // Only bots left: no host until someone joins (the next player to join becomes host).
+    if (this.hostId === p.id) this.hostId = [...this.players.values()].find((pl) => !pl.bot)?.id ?? "";
   }
 
   private startGame(p: Player) {
@@ -832,12 +844,18 @@ export class Game {
     }
   }
 
+  /**
+   * Crew task progress; the crew wins at 100%. Only tasks someone can still finish count: bots never do
+   * theirs, and with ghost tasks off a dead crewmate's unfinished tasks are out of reach.
+   */
   taskProgress() {
     let done = 0;
     let total = 0;
     for (const p of this.players.values()) {
+      if (p.bot) continue;
       for (const t of p.tasks) {
         if (t.fake) continue;
+        if (!t.completed && !p.alive && !this.settings.ghostTasks) continue;
         total++;
         if (t.completed) done++;
       }
@@ -952,7 +970,7 @@ export class Game {
     if (kind === "body") {
       this.emitAll("BODY_REPORTED", { bodyId: body?.id, bodyName: body?.name, reporterName: caller?.name ?? null });
     } else {
-      this.emitAll("EMERGENCY_MEETING", { callerName: caller?.name });
+      this.emitAll("EMERGENCY_MEETING", { callerName: caller?.name, callerId: caller?.id ?? null });
     }
     this.emitAll("MEETING_STARTED", { kind });
     // Without a meeting point (or red button) there's nothing to gather at.
@@ -1032,6 +1050,14 @@ export class Game {
     this.phaseDeadline = this.now() + this.settings.resultSec * 1000;
     this.emitAll("VOTING_RESULT", this.result);
     if (ejected) this.emitAll("PLAYER_EJECTED", { playerId: ejected.id, name: ejected.name });
+  }
+
+  /** Everyone's at the meeting point: any living player can start the discussion timer instead of waiting. */
+  private startDiscussionNow(p: Player) {
+    this.requirePhase("MEETING");
+    if (!p.alive) throw new GameError("Ghosts can't start the discussion");
+    if (this.meeting?.stage !== "gathering") throw new GameError("The discussion has already started");
+    this.startDiscussion();
   }
 
   private hostAdvance(p: Player) {
