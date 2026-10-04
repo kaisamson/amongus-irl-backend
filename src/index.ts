@@ -93,6 +93,9 @@ async function getGame(code: string): Promise<Game | undefined> {
         if (!snap || Date.now() - snap.lastActivity > GAME_TTL_MS) return undefined;
         const game = Game.fromSnapshot(snap, (playerId, msg) => send(code, playerId, msg), hooksFor(() => code, snap.mapId));
         register(game);
+        // Persist migrations applied by fromSnapshot (for example colors added to older players)
+        // even if everyone only reconnects and no gameplay action follows.
+        scheduleSave(game);
         console.log(`Restored game ${code} from ${store.kind} (${snap.phase})`);
         return game;
       })().finally(() => loading.delete(code)),
