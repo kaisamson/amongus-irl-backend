@@ -42,9 +42,9 @@ Run **one instance** only, since live games live in that process's memory. Avoid
 
 ## Host settings worth knowing
 
-All settings live in `src/types.ts` (`DEFAULT_SETTINGS`) and are changed by the host in the lobby.
+All settings live in `src/types.ts` (`DEFAULT_SETTINGS`) and can be changed by any player in the lobby (except `forcedImpostorIds`, which only the host sees and sets). Starting, kicking and adding bots stay with the host.
 
-- **Starting:** new lobbies default to a minimum of two players. Two-player games assign one impostor and one crewmate, and remain playable until an elimination. Task signs are optional: without them, players have no tasks and the task-completion win condition is inactive. Existing lobbies keep their configured minimum; the host can change it to two in settings.
+- **Starting:** new lobbies default to a minimum of two players. Two-player games assign one impostor and one crewmate, and remain playable until an elimination. Task signs are optional: without them, players have no tasks and the task-completion win condition is inactive. Existing lobbies keep their configured minimum; anyone can change it to two in settings.
 - **Signs and tasks:** stations of kind `task` are just signs (photo + location). At game start each player gets
   `tasksPerPlayer` different signs, each with a random mini-game from `taskTypes`.
 - **Kill / report range:** `killDistanceM` and `reportDistanceM` are approximate meters, converted to RSSI cutoffs
@@ -57,10 +57,10 @@ All settings live in `src/types.ts` (`DEFAULT_SETTINGS`) and are changed by the 
   electrical) are saved with the venue map.
 - **Saved games (gamesets) for demos/judging:** named collections of already-photographed signs kept on the server.
   Anyone can list and use them; creating and editing needs the shared password (`GAMESET_PASSWORD`, default
-  `kaimartin`) until there are accounts. The host picks a saved game (or none) in the lobby; using one replaces the
+  `kaimartin`) until there are accounts. Any player picks a saved game (or none) in the lobby; using one replaces the
   lobby's signs, keeps players' own signs, and turns the per-player requirement off; picking none restores both.
 - **Testing:** `forcedImpostorIds` (only the host sees it), `devSkipProximity`, `devSkipCheckpoint`, `minPlayers`.
-- **Live positions (testing):** `livePositions` (default off; the host can flip it mid-game). Each phone reports its
+- **Live positions (testing):** `livePositions` (default off; anyone can flip it, even mid-game). Each phone reports its
   own estimate about every 2 s (`position` action: `{ lat, lng, accuracyM, roomId?, room?, levelDelta?, sources? }`),
   built from sign check-ins, steps and compass, accuracy-weighted GPS and the floor plan; no beacons. The server
   (`src/positions.ts`) pulls a player with a poor fix toward a better-placed player they're within a few meters of over
@@ -83,7 +83,7 @@ All settings live in `src/types.ts` (`DEFAULT_SETTINGS`) and are changed by the 
 | `POST /gamesets/:id/stations` `{ password, name, kind, lat?, lng?, signText?, photoId? }` | adds a sign |
 | `POST /gamesets/:id/stations/:stationId/delete` `{ password }` | removes a sign |
 | `POST /gamesets/:id/rename` / `delete` `{ password, name? }` | renames / deletes a saved game |
-| `POST /games/:code/gameset` `{ playerId, token, gamesetId \| null }` | host uses a saved game in the lobby (or none) |
+| `POST /games/:code/gameset` `{ playerId, token, gamesetId \| null }` | any player uses a saved game in the lobby (or none) |
 | `WS /ws?code&playerId&token` | client → `{ id, action, payload }`; server → `ack`, `state` (per-player snapshot), `event`, `positions` (live map, when on) |
 
 Actions and the state machine live in `src/game.ts` (`Game.handle`, `Game.viewFor`).

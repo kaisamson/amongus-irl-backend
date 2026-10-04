@@ -275,10 +275,11 @@ export class Game {
     if (!phases.includes(this.phase)) throw new GameError(`Not allowed during ${this.phase}`);
   }
 
+  /** Any player can change the lobby settings, except who is forced to be impostor (host only, and secret). */
   private updateSettings(p: Player, patch: Partial<Settings>) {
-    this.requireHost(p);
-    // Live positions is a testing switch the host may flip mid-game; everything else is lobby-only.
+    // Live positions is a testing switch that may be flipped mid-game; everything else is lobby-only.
     const keys = Object.keys(patch ?? {});
+    if (keys.includes("forcedImpostorIds")) this.requireHost(p);
     if (!(keys.length > 0 && keys.every((k) => k === "livePositions"))) this.requirePhase("LOBBY");
     for (const [k, v] of Object.entries(patch ?? {})) {
       if (!(k in DEFAULT_SETTINGS)) throw new GameError(`Unknown setting: ${k}`);
@@ -338,8 +339,7 @@ export class Game {
   useGameset(playerId: string, gameset: Gameset | null) {
     const p = this.players.get(playerId);
     if (!p) throw new GameError("Unknown player");
-    this.requireHost(p);
-    this.requirePhase("LOBBY");
+    this.requirePhase("LOBBY"); // any player can pick the saved game
     const playerSigns = this.stations.filter((s) => s.addedBy);
     const baseStations = this.gameset ? (this.stationsBeforeGameset ?? []) : this.stations.filter((s) => !s.addedBy);
     if (gameset) {
