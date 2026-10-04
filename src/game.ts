@@ -182,7 +182,8 @@ export class Game {
 
   // ---------------------------------------------------------------- players
 
-  addPlayer(name: string): Player {
+  /** `preferredColor`: the suit the player picked before joining; used when nobody else is wearing it. */
+  addPlayer(name: string, preferredColor?: unknown): Player {
     const trimmed = name.trim().slice(0, 20);
     if (!trimmed) throw new GameError("Name required");
     if (this.phase !== "LOBBY") throw new GameError("Game already started");
@@ -194,7 +195,11 @@ export class Game {
       id: randomUUID(),
       token: shortId(16),
       name: trimmed,
-      color: this.nextPlayerColor(),
+      color:
+        typeof preferredColor === "string" && PLAYER_COLORS.includes(preferredColor as PlayerColor)
+        && ![...this.players.values()].some((o) => o.color === preferredColor)
+          ? (preferredColor as PlayerColor)
+          : this.nextPlayerColor(),
       role: null,
       alive: true,
       deathKnown: false,
@@ -842,7 +847,8 @@ export class Game {
     p.killCooldownUntil = now + this.settings.killCooldownSec * 1000;
 
     const impostors = [...this.players.values()].filter((pl) => pl.role === "impostor").map((pl) => pl.id);
-    this.emit([target.id, ...impostors], "PLAYER_KILLED", { victimId: target.id });
+    // The killer is named so both kill animations can show them in their own colour.
+    this.emit([target.id, ...impostors], "PLAYER_KILLED", { victimId: target.id, killerId: p.id });
     this.checkWin();
   }
 
@@ -1307,6 +1313,8 @@ export class Game {
         voteTarget: me.vote ?? null,
         killCooldownUntil: me.role === "impostor" ? me.killCooldownUntil : null,
         killTargets: this.killTargets(me).map((t) => t.id),
+        // Only about yourself: who killed you, for your kill animation after a reconnect.
+        killedBy: me.killedBy,
         nearbyBodies: this.nearbyBodies(me).map((b) => b.id),
         sabotageAvailableAt: me.role === "impostor" ? this.sabotageAvailableAt : null,
         canWatchCams: this.canWatchCams(me),
@@ -1392,6 +1400,7 @@ export interface StateView {
     voteTarget: string | null;
     killCooldownUntil: number | null;
     killTargets: string[];
+    killedBy: string | null;
     nearbyBodies: string[];
     sabotageAvailableAt: number | null;
     canWatchCams: boolean;

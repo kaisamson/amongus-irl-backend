@@ -166,20 +166,20 @@ const server = createServer(async (req, res) => {
       });
       return res.end(gzip ? bundle.gzip : bundle.json);
     }
-    // POST /games { name, mapId? } -> creates lobby, caller becomes host
+    // POST /games { name, mapId?, color? } -> creates lobby, caller becomes host
     if (req.method === "POST" && parts.length === 1 && parts[0] === "games") {
       const body = await readJson(req);
       const game = await createGame(body.mapId || "default");
-      const p = game.addPlayer(String(body.name ?? ""));
+      const p = game.addPlayer(String(body.name ?? ""), body.color);
       scheduleSave(game);
       return json(res, 200, { code: game.code, playerId: p.id, token: p.token });
     }
-    // POST /games/:code/join { name }
+    // POST /games/:code/join { name, color? }   color: preferred suit, used if free
     if (req.method === "POST" && parts.length === 3 && parts[0] === "games" && parts[2] === "join") {
       const game = await getGame(parts[1].toUpperCase());
       if (!game) return json(res, 404, { error: "No game with that code" });
       const body = await readJson(req);
-      const p = game.addPlayer(String(body.name ?? ""));
+      const p = game.addPlayer(String(body.name ?? ""), body.color);
       game.broadcast();
       scheduleSave(game);
       return json(res, 200, { code: game.code, playerId: p.id, token: p.token });
