@@ -55,9 +55,10 @@ All settings live in `src/types.ts` (`DEFAULT_SETTINGS`) and are changed by the 
 - **Lobby signs:** every non-bot player must add `signsPerPlayer` task signs (default 3, `0` turns it off) before the
   host can start. Those signs belong to the game; only special stations (meeting point, emergency button, reactor,
   electrical) are saved with the venue map.
-- **Sign sets (demos/judging):** the host can save a lobby's signs under a name and load them into any later lobby
-  (`GET /sign-sets`, `POST /games/:code/sign-sets/save|load`). Loading replaces the lobby's signs and turns the
-  per-player sign requirement off.
+- **Saved games (gamesets) for demos/judging:** named collections of already-photographed signs kept on the server.
+  Anyone can list and use them; creating and editing needs the shared password (`GAMESET_PASSWORD`, default
+  `kaimartin`) until there are accounts. The host picks a saved game (or none) in the lobby; using one replaces the
+  lobby's signs, keeps players' own signs, and turns the per-player requirement off; picking none restores both.
 - **Testing:** `forcedImpostorIds` (only the host sees it), `devSkipProximity`, `devSkipCheckpoint`, `minPlayers`.
 
 ## API
@@ -69,9 +70,14 @@ All settings live in `src/types.ts` (`DEFAULT_SETTINGS`) and are changed by the 
 | `POST /games/:code/join` `{ name }` | → `{ code, playerId, token }` |
 | `POST /photos` `{ jpegBase64 }` | sign reference photo → `{ photoId }` |
 | `GET /photos/:id.jpg` | photo bytes |
-| `GET /sign-sets` | saved sign sets `[{ name, signs, savedAt }]`, newest first |
-| `POST /games/:code/sign-sets/save` `{ playerId, token, name }` | host saves the lobby's signs → `{ signs }` |
-| `POST /games/:code/sign-sets/load` `{ playerId, token, name }` | host loads a saved set into the lobby → `{ signs }` |
+| `GET /gamesets` | saved games `[{ id, name, signs, updatedAt }]`, newest first |
+| `GET /gamesets/:id` | a saved game with its signs |
+| `POST /gamesets/check` `{ password }` | checks the gameset password |
+| `POST /gamesets` `{ password, name }` | creates a saved game |
+| `POST /gamesets/:id/stations` `{ password, name, kind, lat?, lng?, signText?, photoId? }` | adds a sign |
+| `POST /gamesets/:id/stations/:stationId/delete` `{ password }` | removes a sign |
+| `POST /gamesets/:id/rename` / `delete` `{ password, name? }` | renames / deletes a saved game |
+| `POST /games/:code/gameset` `{ playerId, token, gamesetId \| null }` | host uses a saved game in the lobby (or none) |
 | `WS /ws?code&playerId&token` | client → `{ id, action, payload }`; server → `ack`, `state` (per-player snapshot), `event` |
 
 Actions and the state machine live in `src/game.ts` (`Game.handle`, `Game.viewFor`).

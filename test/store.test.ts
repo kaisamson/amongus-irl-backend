@@ -65,16 +65,19 @@ for (const [kind, make] of stores) {
     assert.equal(await store.loadGame("ABCD"), null);
   });
 
-  test(`${kind}: sign sets save, list newest first, and load`, async () => {
+  test(`${kind}: saved games create, list newest first, update and delete`, async () => {
     const store = make();
     await store.init();
-    assert.equal(await store.loadSignSet("Judging"), null);
-    await store.saveSignSet("Old", stations);
-    await new Promise((r) => setTimeout(r, 5));
-    await store.saveSignSet("Judging", stations);
-    const list = await store.listSignSets();
-    assert.deepEqual(list.map((s) => [s.name, s.signs]), [["Judging", 1], ["Old", 1]]);
-    assert.deepEqual(await store.loadSignSet("Judging"), stations);
+    assert.equal(await store.getGameset("nope"), null);
+    await store.saveGameset({ id: "old", name: "Old", stations, createdAt: 1, updatedAt: 1 });
+    await store.saveGameset({ id: "demo", name: "Demo", stations: [], createdAt: 2, updatedAt: 2 });
+    assert.deepEqual((await store.listGamesets()).map((g) => g.id), ["demo", "old"]);
+    await store.saveGameset({ id: "old", name: "Old", stations, createdAt: 1, updatedAt: 3 });
+    assert.deepEqual((await store.listGamesets()).map((g) => g.id), ["old", "demo"]);
+    assert.deepEqual((await store.getGameset("old"))?.stations, stations);
+    await store.deleteGameset("old");
+    assert.equal(await store.getGameset("old"), null);
+    await assert.rejects(store.getGameset("../x"), /Bad id/);
   });
 
   test(`${kind}: game history records`, async () => {

@@ -13,6 +13,7 @@ import {
   type Settings,
   type Sighting,
   type Station,
+  type Gameset,
   type Task,
   type TaskType,
   type VoteResult,
@@ -63,9 +64,30 @@ export interface GameSnapshot {
   winReason: string | null;
   startedAt: number;
   lastActivity: number;
+  /** Optional: snapshots from before gamesets existed don't have these. */
+  gameset?: { id: string; name: string } | null;
+  stationsBeforeGameset?: Station[] | null;
+  signsBeforeGameset?: number | null;
 }
 
 const MAX_PLAYERS = 15;
+const STATION_KINDS = ["task", "meeting", "emergency", "reactor", "electrical"];
+
+/** Validates and normalizes a sign/station sent by a phone (lobby or gameset editor). */
+export function buildStation(s: Partial<Station>, extra: Partial<Station> = {}): Station {
+  if (!s?.name || !s.kind || !STATION_KINDS.includes(s.kind)) throw new GameError("Station needs a name and kind");
+  return {
+    id: shortId(4),
+    name: String(s.name).slice(0, 40),
+    kind: s.kind,
+    lat: typeof s.lat === "number" ? s.lat : undefined,
+    lng: typeof s.lng === "number" ? s.lng : undefined,
+    radiusM: typeof s.radiusM === "number" ? s.radiusM : 15,
+    signText: typeof s.signText === "string" ? s.signText.trim().slice(0, 60) || undefined : undefined,
+    photoId: typeof s.photoId === "string" ? s.photoId : undefined,
+    ...extra,
+  };
+}
 
 function shortId(bytes = 4): string {
   return randomBytes(bytes).toString("hex");
@@ -121,6 +143,10 @@ export class Game {
   winReason: string | null = null;
   startedAt = 0;
   lastActivity: number;
+  /** Saved game whose signs this lobby is using, if any. */
+  gameset: { id: string; name: string } | null = null;
+  private stationsBeforeGameset: Station[] | null = null;
+  private signsBeforeGameset: number | null = null;
 
   private lastSent = new Map<string, string>();
 
@@ -276,17 +302,7 @@ export class Game {
     this.requirePhase("LOBBY");
     if (!s?.name || !s.kind) throw new GameError("Station needs a name and kind");
     if (s.kind !== "task") this.requireHost(p);
-    const station: Station = {
-      id: shortId(4),
-      name: String(s.name).slice(0, 40),
-      kind: s.kind,
-      lat: typeof s.lat === "number" ? s.lat : undefined,
-      lng: typeof s.lng === "number" ? s.lng : undefined,
-      radiusM: typeof s.radiusM === "number" ? s.radiusM : 15,
-      signText: s.signText?.trim() || undefined,
-      photoId: s.photoId,
-      addedBy: s.kind === "task" ? p.id : undefined,
-    };
+    const station = buildStation(s, { addedBy: s.kind === "task" ? p.id : undefined });
     this.stations.push(station);
     this.hooks.onStationsChanged?.(this.stations);
     return station;
@@ -301,19 +317,34 @@ export class Game {
   }
 
   /**
-   * Host-only demo setup: replace the lobby's signs with a saved sign set. Those signs belong to nobody,
-   * so the per-player sign requirement is turned off (the host can turn it back on).
+   * Host-only: use a saved game's signs in this lobby (no-setup demo), or `null` to stop using it.
+   * Players' own photographed signs are kept either way. Using a game turns the per-player sign
+   * requirement off; stopping restores the lobby's previous stations and requirement.
    */
-  applySignSet(playerId: string, stations: Station[]) {
+  useGameset(playerId: string, gameset: Gameset | null) {
     const p = this.players.get(playerId);
     if (!p) throw new GameError("Unknown player");
     this.requireHost(p);
     this.requirePhase("LOBBY");
-    if (stations.length === 0) throw new GameError("That sign set is empty");
-    this.stations = stations.map(({ addedBy: _owner, ...station }) => station);
-    this.settings.signsPerPlayer = 0;
+    const playerSigns = this.stations.filter((s) => s.addedBy);
+    const baseStations = this.gameset ? (this.stationsBeforeGameset ?? []) : this.stations.filter((s) => !s.addedBy);
+    if (gameset) {
+      if (!this.gameset) {
+        this.stationsBeforeGameset = baseStations;
+        this.signsBeforeGameset = this.settings.signsPerPlayer;
+      }
+      const loaded = gameset.stations.map(({ addedBy: _owner, ...s }) => ({ ...s, fromGameset: gameset.id }));
+      this.stations = [...loaded, ...playerSigns];
+      this.settings.signsPerPlayer = 0;
+      this.gameset = { id: gameset.id, name: gameset.name };
+    } else if (this.gameset) {
+      this.stations = [...baseStations, ...playerSigns];
+      this.settings.signsPerPlayer = this.signsBeforeGameset ?? DEFAULT_SETTINGS.signsPerPlayer;
+      this.gameset = null;
+      this.stationsBeforeGameset = null;
+      this.signsBeforeGameset = null;
+    }
     this.touch();
-    this.hooks.onStationsChanged?.(this.stations);
     this.hooks.onChange?.();
     this.broadcast();
     return this.stations.filter((s) => s.kind === "task").length;
@@ -967,6 +998,9 @@ export class Game {
       winReason: this.winReason,
       startedAt: this.startedAt,
       lastActivity: this.lastActivity,
+      gameset: this.gameset,
+      stationsBeforeGameset: this.stationsBeforeGameset,
+      signsBeforeGameset: this.signsBeforeGameset,
     };
   }
 
@@ -1000,6 +1034,9 @@ export class Game {
     g.winReason = snap.winReason;
     g.startedAt = snap.startedAt;
     g.lastActivity = snap.lastActivity;
+    g.gameset = snap.gameset ?? null;
+    g.stationsBeforeGameset = snap.stationsBeforeGameset ?? null;
+    g.signsBeforeGameset = snap.signsBeforeGameset ?? null;
     return g;
   }
 
@@ -1127,6 +1164,7 @@ export class Game {
         : null,
       winner: this.winner,
       winReason: this.winReason,
+      gameset: this.gameset,
     };
   }
 }
@@ -1181,4 +1219,5 @@ export interface StateView {
   sabotage: { kind: string; deadline: number | null; stations: { stationId: string; active: boolean }[] } | null;
   winner: Winner | null;
   winReason: string | null;
+  gameset: { id: string; name: string } | null;
 }
