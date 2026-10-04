@@ -1016,3 +1016,51 @@ test("admin: after scanning the Admin sign, the map gets everyone's whereabouts 
   const other = players.find((p) => p.id !== viewer.id)!;
   assert.equal((inbox.get(other.id) ?? []).filter((m) => m.type === "admin").length, 0, "only the viewer gets it");
 });
+
+test("bodies stay where they fell: the ghost leaves, the living report it by standing there", () => {
+  const ctx = setup(4, [{ name: "A", kind: "task" }]);
+  ctx.game.settings.devSkipProximity = true;
+  ctx.game.settings.taskTypes = ["wiring"];
+  const { impostor, crew } = startPlaying(ctx);
+  const at = (p: Player, northM: number) =>
+    ctx.act(p, "position", { lat: 49.2778 + northM / 111_320, lng: -122.914, accuracyM: 3, buildingId: "ASB", floorId: "09" });
+  at(crew[0], 0);
+  at(impostor, 0.5);
+  ctx.advance(ctx.game.settings.killCooldownSec * 1000);
+  at(crew[0], 0);
+  ctx.act(impostor, "kill", { targetId: crew[0].id });
+  assert.ok(crew[0].body?.spot, "the body is where the victim was");
+
+  // The ghost walks off and does a task straight away.
+  at(crew[0], 40);
+  const task = crew[0].tasks[0];
+  ctx.act(crew[0], "checkpoint", { stationId: task.steps[0], method: "sign" });
+  ctx.act(crew[0], "task_complete", { taskId: task.id });
+
+  // Far away: no report. Standing at the spot: REPORT, and the body is on the map nearby.
+  at(crew[1], 30);
+  assert.deepEqual(ctx.game.viewFor(crew[1].id).me.nearbyBodies, []);
+  assert.throws(() => ctx.act(crew[1], "report_body", { bodyId: crew[0].id }), /not in range/);
+  at(crew[1], 15);
+  assert.equal(ctx.game.viewFor(crew[1].id).me.bodies.length, 1, "within sight range it's on the map");
+  at(crew[1], 1.5);
+  assert.deepEqual(ctx.game.viewFor(crew[1].id).me.nearbyBodies, [crew[0].id]);
+  ctx.act(crew[1], "report_body", { bodyId: crew[0].id });
+  assert.equal(ctx.game.phase, "MEETING");
+});
+
+test("admin counts an unfound body where it fell, not where its ghost went", () => {
+  const ctx = setup(4);
+  ctx.game.settings.devSkipProximity = true;
+  const { impostor, crew } = startPlaying(ctx);
+  const at = (p: Player, northM: number) =>
+    ctx.act(p, "position", { lat: 49.2778 + northM / 111_320, lng: -122.914, accuracyM: 3, buildingId: "ASB", floorId: "09" });
+  for (const p of ctx.players) at(p, 0);
+  ctx.advance(ctx.game.settings.killCooldownSec * 1000);
+  for (const p of ctx.players) at(p, 0);
+  ctx.act(impostor, "kill", { targetId: crew[0].id });
+  at(crew[0], 100);
+  const people = ctx.game.adminPeople();
+  assert.equal(people.length, 4, "three living and the body");
+  assert.ok(people.every((x) => Math.abs(x.lat - 49.2778) < 1e-6), "nobody counted 100 m away");
+});

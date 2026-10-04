@@ -190,7 +190,9 @@ export interface Player {
   /** Whether other players have learned this player is dead (via a meeting or ejection). */
   deathKnown: boolean;
   ejected: boolean;
-  body: { reported: boolean; at: number } | null;
+  /** Killed and not found yet. `spot`: where they fell, from their position (or the killer's) at the kill:
+   *  the body stays there for others to find, while the ghost is free to walk off and do tasks. */
+  body: { reported: boolean; at: number; spot?: BodySpot } | null;
   killedBy: string | null;
   /** Short random ID this phone advertises over BLE. Not the player ID, rotates every game. */
   bleToken: string;
@@ -215,6 +217,14 @@ export interface Sighting {
 }
 
 export type MeetingKind = "body" | "emergency";
+
+/** Where a body lies. */
+export interface BodySpot {
+  lat: number;
+  lng: number;
+  buildingId: string | null;
+  floorId: string | null;
+}
 
 export interface Meeting {
   kind: MeetingKind;
