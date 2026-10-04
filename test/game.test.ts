@@ -507,13 +507,16 @@ test("kill and report ranges are set in approximate meters", () => {
   assert.throws(() => ctx.act(ctx.host, "update_settings", { killDistanceM: 0 }), /Not allowed|greater than 0/);
 });
 
-test("all timers are host-adjustable and validated", () => {
+test("any player can adjust the settings, which are validated", () => {
   const ctx = setup(4);
   ctx.act(ctx.host, "update_settings", { roleRevealSec: 3, gatherTimeoutSec: 30, discussionSec: 0, votingSec: 20, resultSec: 2 });
   assert.equal(ctx.game.settings.resultSec, 2);
   assert.throws(() => ctx.act(ctx.host, "update_settings", { votingSec: -5 }), /negative/);
   assert.throws(() => ctx.act(ctx.host, "update_settings", { votingSec: "10" }), /must be number/);
-  assert.throws(() => ctx.act(ctx.players[1], "update_settings", { votingSec: 10 }), /Only the host/);
+  ctx.act(ctx.players[1], "update_settings", { votingSec: 10 });
+  assert.equal(ctx.game.settings.votingSec, 10);
+  // Forcing the impostor stays with the host: nobody else can see it, so nobody else may set it.
+  assert.throws(() => ctx.act(ctx.players[1], "update_settings", { forcedImpostorIds: [ctx.players[1].id] }), /Only the host/);
 });
 
 test("restoring an old snapshot drops removed settings and defaults new ones", () => {
@@ -615,7 +618,7 @@ test("signs per player is validated, 0 turns the requirement off, kicked players
   assert.equal(game.phase, "ROLE_REVEAL");
 });
 
-test("host can use a saved game's signs, switch games, and go back to none", () => {
+test("any player can use a saved game's signs, switch games, and go back to none", () => {
   const game = new Game("SETS", "m", [{ id: "cafe", name: "Cafe", kind: "meeting", radiusM: 15 }], () => {}, {});
   const host = game.addPlayer("Host");
   const guest = game.addPlayer("Guest");
@@ -630,8 +633,7 @@ test("host can use a saved game's signs, switch games, and go back to none", () 
   };
   const other = { ...demo, id: "other", name: "Other", stations: [{ id: "c", name: "3000", kind: "task" as const, radiusM: 15 }] };
 
-  assert.throws(() => game.useGameset(guest.id, demo), /Only the host/);
-  assert.equal(game.useGameset(host.id, demo), 3, "2 from the game + the guest's own sign");
+  assert.equal(game.useGameset(guest.id, demo), 3, "2 from the game + the guest's own sign");
   assert.deepEqual(game.gameset, { id: "demo", name: "Judging demo" });
   assert.equal(game.settings.signsPerPlayer, 0);
   assert.ok(!game.stations.some((s) => s.id === "cafe"), "the game's stations replace the lobby's");

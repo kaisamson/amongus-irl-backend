@@ -149,12 +149,12 @@ test("position reports don't resend the game state", () => {
   assert.equal(states(other), before);
 });
 
-test("the host can flip live positions mid-game, but not other settings", () => {
+test("live positions can be flipped mid-game, but not other settings", () => {
   const { game, host } = setup();
   game.handle(host.id, "add_station", { name: "A", kind: "task" });
   game.handle(host.id, "add_station", { name: "B", kind: "task" });
   game.handle(host.id, "add_station", { name: "Meet", kind: "meeting" });
-  game.handle(host.id, "start_game");
+  game.handle(host.id, "start_game", {});
   game.handle(host.id, "update_settings", { livePositions: true });
   assert.equal(game.settings.livePositions, true);
   assert.throws(() => game.handle(host.id, "update_settings", { livePositions: false, impostors: 2 }));

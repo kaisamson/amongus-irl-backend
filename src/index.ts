@@ -213,7 +213,7 @@ const server = createServer(async (req, res) => {
         }
       }
     }
-    // POST /games/:code/gameset { playerId, token, gamesetId | null } -> { signs }   host picks a saved game (or none)
+    // POST /games/:code/gameset { playerId, token, gamesetId | null } -> { signs }   any player picks a saved game (or none)
     if (req.method === "POST" && parts.length === 3 && parts[0] === "games" && parts[2] === "gameset") {
       const game = await getGame(parts[1].toUpperCase());
       if (!game) return json(res, 404, { error: "No game with that code" });
