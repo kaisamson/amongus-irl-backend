@@ -6,7 +6,7 @@ import { randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import { CampusCache } from "./campus.ts";
-import { buildStation, Game, type GameSnapshot, type Outbound } from "./game.ts";
+import { buildStation, Game, placeStation, type GameSnapshot, type Outbound } from "./game.ts";
 import { FileStore, RedisStore, type Store } from "./store.ts";
 import { GameError, type Gameset, type Station } from "./types.ts";
 
@@ -228,6 +228,15 @@ const server = createServer(async (req, res) => {
         if (parts.length === 3 && parts[2] === "stations") {
           const station = buildStation(body);
           await store.saveGameset({ ...gameset, stations: [...gameset.stations, station], updatedAt: Date.now() });
+          return json(res, 200, station);
+        }
+        // POST /gamesets/:id/stations/:stationId/update { password, lat, lng, buildingId, floorId } -> station
+        if (parts.length === 5 && parts[2] === "stations" && parts[4] === "update") {
+          const old = gameset.stations.find((s) => s.id === parts[3]);
+          if (!old) return json(res, 404, { error: "No sign with that id" });
+          const station = placeStation(old, body);
+          const stations = gameset.stations.map((s) => (s.id === old.id ? station : s));
+          await store.saveGameset({ ...gameset, stations, updatedAt: Date.now() });
           return json(res, 200, station);
         }
         // POST /gamesets/:id/stations/:stationId/delete { password }

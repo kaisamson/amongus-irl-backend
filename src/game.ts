@@ -96,6 +96,20 @@ export function buildStation(s: Partial<Station>, extra: Partial<Station> = {}):
   };
 }
 
+/**
+ * Moves a saved sign: its map pin and campus building/floor. Everything else (photo, text, kind) stays.
+ * A blank building or floor clears it (the pin is off campus or the floor is unknown).
+ */
+export function placeStation(station: Station, s: { lat?: unknown; lng?: unknown; buildingId?: unknown; floorId?: unknown }): Station {
+  const { lat, lng } = s;
+  if (typeof lat !== "number" || typeof lng !== "number" || !Number.isFinite(lat) || !Number.isFinite(lng)
+    || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+    throw new GameError("Pin needs a latitude and longitude");
+  }
+  const id = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim().slice(0, 12) : undefined);
+  return { ...station, lat, lng, buildingId: id(s.buildingId), floorId: id(s.floorId) };
+}
+
 function shortId(bytes = 4): string {
   return randomBytes(bytes).toString("hex");
 }
