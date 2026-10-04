@@ -808,3 +808,25 @@ test("kill range is optimistic about leaving: one weak reading doesn't drop the 
   report(-95); // really walked away
   assert.deepEqual(ctx.game.viewFor(impostor.id).me.killTargets, [], "out of range once the strong reading is old");
 });
+
+test("a preferred suit colour is used when it's free; kills name the killer", () => {
+  const game = new Game("PREF", "m", [], () => {}, {});
+  const a = game.addPlayer("A", "cyan");
+  const b = game.addPlayer("B", "cyan"); // taken: gets the next free one
+  const c = game.addPlayer("C", "not-a-colour");
+  assert.equal(a.color, "cyan");
+  assert.notEqual(b.color, "cyan");
+  assert.ok(c.color);
+
+  const events: { to: string; event: string; data: any }[] = [];
+  const ctx = setup(4);
+  (ctx.game as any).send = (to: string, msg: any) => { if (msg.type === "event") events.push({ to, event: msg.event, data: msg.data }); };
+  const { impostor, crew } = startPlaying(ctx);
+  ctx.game.settings.devSkipProximity = true;
+  ctx.advance(ctx.game.settings.killCooldownSec * 1000);
+  ctx.act(impostor, "kill", { targetId: crew[0].id });
+  const killed = events.find((e) => e.event === "PLAYER_KILLED" && e.to === crew[0].id);
+  assert.deepEqual(killed?.data, { victimId: crew[0].id, killerId: impostor.id });
+  assert.equal(ctx.game.viewFor(crew[0].id).me.killedBy, impostor.id);
+  assert.equal(ctx.game.viewFor(crew[1].id).me.killedBy, null);
+});
