@@ -78,7 +78,7 @@ fetches SFU's public RoomFinder ArcGIS layer (`RoomFinder2024_RoomSearch`) once,
 floor (bottom to top), rounds coordinates to ~10 cm and keeps it in memory (~2.3 MB, ~380 KB gzipped), refreshing weekly
 and keeping the old copy if SFU is unreachable. SFU's map server may not answer hosting providers outside Canada, so
 a snapshot is saved with the server (`snapshot/campus.json.gz`) and served whenever SFU can't be reached (the 503
-response includes the reason). Refresh it from a Canadian network with `npm run campus:snapshot` and commit it. Signs and position reports carry `buildingId` / `floorId` from it.
+response includes the reason). Refresh it from a Canadian network with `npm run campus:snapshot` and commit it. Signs and position reports carry `buildingId` / `floorId` from it, and the lobby's play area (`mapBuildingId` / `mapFloorId` settings) says which building and floor the game is on.
 Room data belongs to Simon Fraser University.
 
 ## API

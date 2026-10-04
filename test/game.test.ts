@@ -733,3 +733,12 @@ test("loading a saved game keeps lobby special signs it doesn't have", () => {
   game.useGameset(host.id, null);
   assert.deepEqual(game.stations.map((s) => s.name).sort(), ["Admin", "Lights", "Red button"]);
 });
+
+test("the play area (building and floor) is a lobby setting anyone can pick", () => {
+  const ctx = setup(2);
+  ctx.act(ctx.players[1], "update_settings", { mapBuildingId: "SUB", mapFloorId: "2000" });
+  assert.equal(ctx.game.settings.mapBuildingId, "SUB");
+  assert.equal(ctx.game.viewFor(ctx.host.id).settings.mapFloorId, "2000");
+  assert.throws(() => ctx.act(ctx.host, "update_settings", { mapFloorId: 2000 }), /must be string/);
+  assert.throws(() => ctx.act(ctx.host, "update_settings", { mapBuildingId: "x".repeat(20) }), /Bad building/);
+});

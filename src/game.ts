@@ -303,6 +303,9 @@ export class Game {
       if (typeof v !== expected) throw new GameError(`Setting ${k} must be ${expected}`);
       if (typeof v === "number" && !Number.isFinite(v)) throw new GameError(`Setting ${k} must be a number`);
       if (typeof v === "number" && v < 0 && k !== "rssiAt1m") throw new GameError(`Setting ${k} can't be negative`);
+      if ((k === "mapBuildingId" || k === "mapFloorId") && ((v as string).length > 12 || /[^\w.-]/.test(v as string))) {
+        throw new GameError("Bad building or floor id");
+      }
       if (k === "signsPerPlayer" && (!Number.isInteger(v) || (v as number) > 10)) {
         throw new GameError("Signs per player must be a whole number from 0 to 10");
       }
