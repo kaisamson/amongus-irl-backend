@@ -279,11 +279,11 @@ export class Game {
     if (!phases.includes(this.phase)) throw new GameError(`Not allowed during ${this.phase}`);
   }
 
-  /** Any player can change the lobby settings, except who is forced to be impostor (host only, and secret). */
+  /** Any player can change lobby settings, except forced impostors and demo win rules (host only). */
   private updateSettings(p: Player, patch: Partial<Settings>) {
     // Live positions is a testing switch that may be flipped mid-game; everything else is lobby-only.
     const keys = Object.keys(patch ?? {});
-    if (keys.includes("forcedImpostorIds")) this.requireHost(p);
+    if (keys.includes("forcedImpostorIds") || keys.includes("demoContinueAtParity")) this.requireHost(p);
     if (!(keys.length > 0 && keys.every((k) => k === "livePositions"))) this.requirePhase("LOBBY");
     for (const [k, v] of Object.entries(patch ?? {})) {
       if (!(k in DEFAULT_SETTINGS)) throw new GameError(`Unknown setting: ${k}`);
@@ -1016,8 +1016,10 @@ export class Game {
     if (progress.total > 0 && progress.done >= progress.total) return this.endGame("crewmates", "All tasks completed");
     // A two-player game starts at 1:1, so parity only wins once someone is eliminated.
     const bothTwoPlayerParticipantsAlive = this.players.size === 2 && living.length === 2;
-    if (imps >= crew && !bothTwoPlayerParticipantsAlive) {
-      return this.endGame("impostors", "Impostors outnumber the crew");
+    const impostorWin = this.settings.demoContinueAtParity ? crew === 0 : imps >= crew;
+    if (impostorWin && !bothTwoPlayerParticipantsAlive) {
+      return this.endGame("impostors", this.settings.demoContinueAtParity
+        ? "No living crewmates remain" : "Impostors outnumber the crew");
     }
     return false;
   }

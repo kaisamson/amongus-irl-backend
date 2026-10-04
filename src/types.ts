@@ -71,6 +71,8 @@ export interface Settings {
   devSkipProximity: boolean;
   /** Testing only: allow tasks/meetings without verifying a checkpoint first. */
   devSkipCheckpoint: boolean;
+  /** Demo only: allow reports and voting at parity; impostors win when no crew remain. */
+  demoContinueAtParity: boolean;
   ghostTasks: boolean;
   /** Mini-games in rotation. Each sign assigned to a player gets a random one of these. */
   taskTypes: TaskType[];
@@ -114,6 +116,7 @@ export const DEFAULT_SETTINGS: Settings = {
   qrFallback: true,
   devSkipProximity: false,
   devSkipCheckpoint: false,
+  demoContinueAtParity: false,
   ghostTasks: true,
   taskTypes: ["wiring", "upload", "sequence", "delivery", "swipe", "shields", "o2", "scan", "divert"],
   forcedImpostorIds: [],
