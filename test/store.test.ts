@@ -12,6 +12,7 @@ import type { Station } from "../src/types.ts";
 const stations: Station[] = [
   { id: "s1", name: "Electrical", kind: "task", taskType: "wiring", lat: 49.27, lng: -122.91, radiusM: 15, photoId: "abc123" },
   { id: "s2", name: "Cafeteria", kind: "meeting", radiusM: 20, signText: "CAFE" },
+  { id: "s3", name: "Red button", kind: "emergency", radiusM: 10 },
 ];
 
 function snapshotOfStartedGame() {

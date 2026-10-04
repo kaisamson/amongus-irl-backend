@@ -73,7 +73,9 @@ export interface GameSnapshot {
 }
 
 const MAX_PLAYERS = 15;
-const STATION_KINDS = ["task", "meeting", "emergency", "reactor", "electrical"];
+const STATION_KINDS = ["task", "meeting", "emergency", "reactor", "electrical", "security", "admin"];
+/** How many of each special sign a map can have; adding another replaces the oldest. */
+const SPECIAL_LIMIT: Record<string, number> = { meeting: 1, emergency: 1, reactor: 2, electrical: 1, security: 1, admin: 1 };
 
 /** Validates and normalizes a sign/station sent by a phone (lobby or gameset editor). */
 export function buildStation(s: Partial<Station>, extra: Partial<Station> = {}): Station {
@@ -316,8 +318,14 @@ export class Game {
   private addStation(p: Player, s: Partial<Station>) {
     this.requirePhase("LOBBY");
     if (!s?.name || !s.kind) throw new GameError("Station needs a name and kind");
-    if (s.kind !== "task") this.requireHost(p);
     const station = buildStation(s, { addedBy: s.kind === "task" ? p.id : undefined });
+    // Special signs (red button, sabotage, security, admin): anyone can set them; a new one replaces the oldest.
+    const limit = SPECIAL_LIMIT[station.kind];
+    if (limit !== undefined) {
+      const same = this.stations.filter((st) => st.kind === station.kind);
+      const drop = new Set(same.slice(0, Math.max(0, same.length - limit + 1)).map((st) => st.id));
+      this.stations = this.stations.filter((st) => !drop.has(st.id));
+    }
     this.stations.push(station);
     this.hooks.onStationsChanged?.(this.stations);
     return station;
@@ -326,15 +334,17 @@ export class Game {
   private deleteStation(p: Player, { stationId }: { stationId: string }) {
     this.requirePhase("LOBBY");
     const station = this.stations.find((s) => s.id === stationId);
-    if (station?.addedBy !== p.id) this.requireHost(p); // players may remove their own signs
+    // Anyone can remove special signs and their own task signs; only the host removes other players' signs.
+    if (station?.kind === "task" && station.addedBy !== p.id) this.requireHost(p);
     this.stations = this.stations.filter((s) => s.id !== stationId);
     this.hooks.onStationsChanged?.(this.stations);
   }
 
   /**
-   * Host-only: use a saved game's signs in this lobby (no-setup demo), or `null` to stop using it.
-   * Players' own photographed signs are kept either way. Using a game turns the per-player sign
-   * requirement off; stopping restores the lobby's previous stations and requirement.
+   * Use a saved game's signs in this lobby (no-setup demo), or `null` to stop using it. Players' own
+   * photographed signs are kept either way, and so are special signs (red button, sabotage, ...) of
+   * kinds the saved game doesn't have. The per-player requirement stays: the saved game's signs count
+   * toward the total and players split what's left (see `signQuotas`).
    */
   useGameset(playerId: string, gameset: Gameset | null) {
     const p = this.players.get(playerId);
@@ -343,17 +353,23 @@ export class Game {
     const playerSigns = this.stations.filter((s) => s.addedBy);
     const baseStations = this.gameset ? (this.stationsBeforeGameset ?? []) : this.stations.filter((s) => !s.addedBy);
     if (gameset) {
-      if (!this.gameset) {
-        this.stationsBeforeGameset = baseStations;
-        this.signsBeforeGameset = this.settings.signsPerPlayer;
-      }
+      if (!this.gameset) this.stationsBeforeGameset = baseStations;
       const loaded = gameset.stations.map(({ addedBy: _owner, ...s }) => ({ ...s, fromGameset: gameset.id }));
-      this.stations = [...loaded, ...playerSigns];
-      this.settings.signsPerPlayer = 0;
+      const loadedKinds = new Set(loaded.map((s) => s.kind));
+      const keptSpecials = this.stations.filter(
+        (s) => !s.addedBy && !s.fromGameset && s.kind !== "task" && !loadedKinds.has(s.kind),
+      );
+      this.stations = [...loaded, ...keptSpecials, ...playerSigns];
       this.gameset = { id: gameset.id, name: gameset.name };
     } else if (this.gameset) {
-      this.stations = [...baseStations, ...playerSigns];
-      this.settings.signsPerPlayer = this.signsBeforeGameset ?? DEFAULT_SETTINGS.signsPerPlayer;
+      // Special signs set while the saved game was in use win over the old ones of the same kind.
+      const addedSince = this.stations.filter(
+        (s) => !s.addedBy && !s.fromGameset && !baseStations.some((b) => b.id === s.id),
+      );
+      const sinceKinds = new Set(addedSince.map((s) => s.kind));
+      this.stations = [...baseStations.filter((s) => !sinceKinds.has(s.kind)), ...addedSince, ...playerSigns];
+      // Older lobbies turned the requirement off while a saved game was in use: put it back.
+      if (this.signsBeforeGameset !== null) this.settings.signsPerPlayer = this.signsBeforeGameset;
       this.gameset = null;
       this.stationsBeforeGameset = null;
       this.signsBeforeGameset = null;
@@ -364,13 +380,34 @@ export class Game {
     return this.stations.filter((s) => s.kind === "task").length;
   }
 
-  /** Non-bot players who haven't added `signsPerPlayer` signs yet. */
-  playersMissingSigns(): Player[] {
+  /**
+   * Signs each non-bot player still owes. The game wants `signsPerPlayer` per player in total; signs
+   * that are already there (a saved game's) count toward it, and the rest is split as evenly as
+   * possible, in join order. Without preset signs that's simply `signsPerPlayer` each.
+   */
+  signQuotas(): Record<string, number> {
+    const humans = [...this.players.values()].filter((pl) => !pl.bot);
     const need = this.settings.signsPerPlayer;
-    if (need <= 0) return [];
+    if (need <= 0 || humans.length === 0) return Object.fromEntries(humans.map((pl) => [pl.id, 0]));
+    const preset = this.stations.filter((st) => st.kind === "task" && !st.addedBy).length;
+    const remaining = Math.max(0, need * humans.length - preset);
+    const base = Math.floor(remaining / humans.length);
+    const extra = remaining % humans.length;
+    return Object.fromEntries(humans.map((pl, i) => [pl.id, Math.min(need, base + (i < extra ? 1 : 0))]));
+  }
+
+  /** Non-bot players who haven't added their share of signs yet. */
+  playersMissingSigns(): Player[] {
+    const quotas = this.signQuotas();
     return [...this.players.values()].filter(
-      (pl) => !pl.bot && this.stations.filter((st) => st.kind === "task" && st.addedBy === pl.id).length < need,
+      (pl) => !pl.bot && this.stations.filter((st) => st.kind === "task" && st.addedBy === pl.id).length < (quotas[pl.id] ?? 0),
     );
+  }
+
+  /** Where meetings gather: the meeting point, or the red button when there's no separate one. */
+  private meetingPoints(): Station[] {
+    const meeting = this.stations.filter((s) => s.kind === "meeting");
+    return meeting.length > 0 ? meeting : this.stations.filter((s) => s.kind === "emergency");
   }
 
   /** Host-only testing aid: a server-run player so a lobby can reach the minimum with fewer phones. */
@@ -439,9 +476,12 @@ export class Game {
     if (s.impostors < 1 || (!isTwoPlayerGame && s.impostors * 2 >= players.length)) {
       throw new GameError("Too many impostors for this many players");
     }
+    if (!this.stations.some((st) => st.kind === "emergency")) {
+      throw new GameError("Add the red button sign (emergency meeting) first");
+    }
     const missing = this.playersMissingSigns();
     if (missing.length > 0) {
-      throw new GameError(`Waiting for ${missing.map((pl) => pl.name).join(", ")} to add ${s.signsPerPlayer} signs`);
+      throw new GameError(`Waiting for ${missing.map((pl) => pl.name).join(", ")} to add their signs`);
     }
     const taskStations = this.stations.filter((st) => st.kind === "task");
 
@@ -628,7 +668,7 @@ export class Game {
     }
     p.lastCheckpoint = { stationId, method, at: this.now() };
 
-    if (this.phase === "MEETING" && this.meeting?.stage === "gathering" && station.kind === "meeting" && p.alive) {
+    if (this.phase === "MEETING" && this.meeting?.stage === "gathering" && this.meetingPoints().includes(station) && p.alive) {
       this.meeting.arrived.add(p.id);
       this.maybeStartDiscussion();
     }
@@ -811,8 +851,8 @@ export class Game {
       this.emitAll("EMERGENCY_MEETING", { callerName: caller?.name });
     }
     this.emitAll("MEETING_STARTED", { kind });
-    // Without a meeting-point station there's nothing to gather at.
-    if (!this.stations.some((s) => s.kind === "meeting")) this.startDiscussion();
+    // Without a meeting point (or red button) there's nothing to gather at.
+    if (this.meetingPoints().length === 0) this.startDiscussion();
   }
 
   private maybeStartDiscussion() {
@@ -1226,6 +1266,7 @@ export class Game {
       winner: this.winner,
       winReason: this.winReason,
       gameset: this.gameset,
+      signQuotas: this.phase === "LOBBY" ? this.signQuotas() : {},
     };
   }
 }
@@ -1281,4 +1322,6 @@ export interface StateView {
   winner: Winner | null;
   winReason: string | null;
   gameset: { id: string; name: string } | null;
+  /** Lobby: how many signs each non-bot player must add (their share when a saved game supplies some). */
+  signQuotas: Record<string, number>;
 }

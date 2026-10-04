@@ -52,15 +52,19 @@ All settings live in `src/types.ts` (`DEFAULT_SETTINGS`) and can be changed by a
   (the app's Bluetooth tab shows the reading).
 - **Timers:** `roleRevealSec`, `gatherTimeoutSec`, `discussionSec`, `votingSec`, `resultSec`, `killCooldownSec`,
   `emergencyCooldownSec`, `sabotageCooldownSec`, `reactorSec`, `uploadSec`.
-- **Lobby signs:** every non-bot player must add `signsPerPlayer` task signs (default 3, `0` turns it off) before the
-  host can start. Those signs belong to the game; only special stations (meeting point, emergency button, reactor,
-  electrical) are saved with the venue map.
+- **Lobby signs:** the game wants `signsPerPlayer` task signs per non-bot player (default 3, `0` turns it off).
+  Signs already there (a saved game's) count toward that total and the rest is split as evenly as possible
+  (`signQuotas` in each player's view). Those signs belong to the game; special signs are saved with the venue map.
+- **Special signs:** the red button (`emergency`) is required to start and doubles as the meeting point when there's no
+  separate `meeting` sign. Optional: two `reactor` signs and `electrical` (sabotages), `security` (cameras) and `admin`
+  (room occupancy). Anyone can set them; adding another of a kind replaces the oldest (reactor keeps two).
 - **Saved games (gamesets) for demos/judging:** named collections of already-photographed signs kept on the server.
   Anyone can list and use them; creating and editing needs the shared password (`GAMESET_PASSWORD`, default
   `kaimartin`) until there are accounts. Any player picks a saved game (or none) in the lobby; using one replaces the
-  lobby's signs, keeps players' own signs, and turns the per-player requirement off; picking none restores both.
+  lobby's signs (keeping players' own signs and any special signs the saved game doesn't have); its signs count toward
+  the sign total, so players only photograph the rest. Picking none restores the lobby's signs.
 - **Testing:** `forcedImpostorIds` (only the host sees it), `devSkipProximity`, `devSkipCheckpoint`, `minPlayers`.
-- **Live positions (testing):** `livePositions` (default off; anyone can flip it, even mid-game). Each phone reports its
+- **Live positions:** `livePositions` (default on; anyone can flip it, even mid-game). Each phone reports its
   own estimate about every 2 s (`position` action: `{ lat, lng, accuracyM, roomId?, room?, levelDelta?, sources? }`),
   built from sign check-ins, steps and compass, accuracy-weighted GPS and the floor plan; no beacons. The server
   (`src/positions.ts`) pulls a player with a poor fix toward a better-placed player they're within a few meters of over
