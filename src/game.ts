@@ -9,6 +9,7 @@ import {
   type Player,
   PLAYER_COLORS,
   type PlayerColor,
+  type BodySpot,
   type Sabotage,
   type SabotageSigns,
   type Settings,
@@ -146,6 +147,20 @@ export function pickSabotageSigns(stations: Station[]): SabotageSigns | null {
   // Fewer than four signs: the O2 pair reuses reactor signs, still two different ones.
   const [a, b, c, d] = order.map((s) => s.id);
   return { reactor: [a, b], oxygen: d ? [c, d] : c ? [c, a] : [a, b] };
+}
+
+/** How far away a body shows on someone's map (their fog of war decides what they actually see). */
+const BODY_VIEW_M = 25;
+
+function metersBetween(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
+  const dy = (a.lat - b.lat) * 111_320;
+  const dx = (a.lng - b.lng) * 111_320 * Math.cos((a.lat * Math.PI) / 180);
+  return Math.hypot(dx, dy);
+}
+
+/** Same floor, or one of them doesn't know its floor. */
+function sameFloor(a: { buildingId: string | null; floorId: string | null }, b: { buildingId: string | null; floorId: string | null }) {
+  return !a.floorId || !b.floorId || (a.buildingId === b.buildingId && a.floorId === b.floorId);
 }
 
 function shortId(bytes = 4): string {
@@ -765,9 +780,13 @@ export class Game {
     const people: AdminPerson[] = [];
     for (const p of this.currentPositions()) {
       const pl = this.players.get(p.playerId);
-      if (!pl || p.stale || now - p.at > 15_000) continue;
-      if (!pl.alive && !(pl.body && !pl.body.reported)) continue;
+      if (!pl || !pl.alive || p.stale || now - p.at > 15_000) continue;
       people.push({ lat: p.lat, lng: p.lng, buildingId: p.buildingId, floorId: p.floorId });
+    }
+    // Bodies count where they lie, not where their ghost has gone.
+    for (const pl of this.players.values()) {
+      const spot = pl.body && !pl.body.reported ? pl.body.spot : undefined;
+      if (spot) people.push({ ...spot });
     }
     return shuffle(people);
   }
@@ -887,11 +906,38 @@ export class Game {
     );
   }
 
-  private nearbyBodies(p: Player): Player[] {
+  /**
+   * Bodies the living can report: standing within reportDistanceM of where one fell (same floor), from this
+   * phone's position. A body with no known spot (no positions at the kill) falls back to Bluetooth near the
+   * victim's phone, as before.
+   */
+  private nearbyBodies(p: Player, positions = this.currentPositions()): Player[] {
     if (this.phase !== "PLAYING" || !p.alive) return [];
-    return [...this.players.values()].filter(
-      (b) => b.body && !b.body.reported && this.isNear(p, b, this.reportRssi),
-    );
+    const mine = this.freshPosition(p.id, positions);
+    return [...this.players.values()].filter((b) => {
+      if (!b.body || b.body.reported || b.id === p.id) return false;
+      const spot = b.body.spot;
+      if (!spot) return this.isNear(p, b, this.reportRssi);
+      return !!mine && sameFloor(mine, spot) && metersBetween(mine, spot) <= this.settings.reportDistanceM;
+    });
+  }
+
+  /** Unfound bodies within sight range of a player (same floor), for their map. */
+  private bodiesInView(p: Player, positions: PlayerPosition[]): (BodySpot & { playerId: string })[] {
+    if (this.phase !== "PLAYING") return [];
+    const mine = this.freshPosition(p.id, positions);
+    if (!mine) return [];
+    return [...this.players.values()].flatMap((b) => {
+      const spot = b.body && !b.body.reported ? b.body.spot : undefined;
+      if (!spot || b.id === p.id || !sameFloor(mine, spot) || metersBetween(mine, spot) > BODY_VIEW_M) return [];
+      return [{ playerId: b.id, ...spot }];
+    });
+  }
+
+  /** A player's fused position if it's recent. */
+  private freshPosition(playerId: string, positions: PlayerPosition[]): PlayerPosition | undefined {
+    const now = this.now();
+    return positions.find((x) => x.playerId === playerId && !x.stale && now - x.at <= 15_000);
   }
 
   // ------------------------------------------------------------ checkpoints & tasks
@@ -939,7 +985,7 @@ export class Game {
   private requireCanDoTasks(p: Player) {
     this.requirePhase("PLAYING");
     if (!p.alive && !this.settings.ghostTasks) throw new GameError("Ghosts can't do tasks");
-    if (p.body && !p.body.reported) throw new GameError("You're a body. Stay put until you're found");
+    // Killed players are ghosts straight away: their body stays where it fell (body.spot) for others to find.
   }
 
   private taskStart(p: Player, { taskId }: { taskId: string }) {
@@ -1017,7 +1063,13 @@ export class Game {
     if (target.role === "impostor") throw new GameError("Can't kill an impostor");
 
     target.alive = false;
-    target.body = { reported: false, at: now };
+    // Where the body lies: the victim's position, else the killer's (they were next to each other).
+    const positions = this.currentPositions();
+    const at = this.freshPosition(target.id, positions) ?? this.freshPosition(p.id, positions);
+    const spot: BodySpot | undefined = at
+      ? { lat: at.lat, lng: at.lng, buildingId: at.buildingId, floorId: at.floorId }
+      : undefined;
+    target.body = { reported: false, at: now, spot };
     target.killedBy = p.id;
     p.killCooldownUntil = now + this.settings.killCooldownSec * 1000;
 
@@ -1042,7 +1094,7 @@ export class Game {
         body = [...this.players.values()].find((pl) => pl.qrToken === qrToken);
       } else {
         body = bodyId ? this.players.get(bodyId) : undefined;
-        if (body && !this.isNear(p, body, this.reportRssi)) {
+        if (body && !this.nearbyBodies(p).includes(body)) {
           throw new GameError("Body not in range");
         }
       }
@@ -1463,6 +1515,7 @@ export class Game {
    */
   viewFor(viewerId: string): StateView {
     const me = this.players.get(viewerId)!;
+    const positions = this.phase === "PLAYING" ? this.currentPositions() : [];
     const over = this.phase === "GAME_OVER";
     const ghost = !me.alive;
     const now = this.now();
@@ -1520,7 +1573,9 @@ export class Game {
         killTargets: this.killTargets(me).map((t) => t.id),
         // Only about yourself: who killed you, for your kill animation after a reconnect.
         killedBy: me.killedBy,
-        nearbyBodies: this.nearbyBodies(me).map((b) => b.id),
+        nearbyBodies: this.nearbyBodies(me, positions).map((b) => b.id),
+        // Unfound bodies within sight range, for the map (the phone shows the ones its fog of war allows).
+        bodies: this.bodiesInView(me, positions),
         sabotageAvailableAt: me.role === "impostor" ? this.sabotageAvailableAt : null,
         canWatchCams: this.canWatchCams(me),
         canViewAdmin: this.canViewAdmin(me),
@@ -1612,6 +1667,7 @@ export interface StateView {
     killTargets: string[];
     killedBy: string | null;
     nearbyBodies: string[];
+    bodies: (BodySpot & { playerId: string })[];
     sabotageAvailableAt: number | null;
     canWatchCams: boolean;
     canViewAdmin: boolean;
