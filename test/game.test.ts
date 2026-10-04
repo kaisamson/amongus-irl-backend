@@ -743,3 +743,51 @@ test("the play area (building and floor) is a lobby setting anyone can pick", ()
   assert.throws(() => ctx.act(ctx.host, "update_settings", { mapFloorId: 2000 }), /must be string/);
   assert.throws(() => ctx.act(ctx.host, "update_settings", { mapBuildingId: "x".repeat(20) }), /Bad building/);
 });
+
+test("security cameras: dead players and players at the Security sign can watch; frames go only to watchers", () => {
+  const cams: { to: string; playerId: string }[] = [];
+  const ctx = setup(4, [
+    { name: "T", kind: "task" },
+    { name: "Security", kind: "security" },
+    { name: "Meet", kind: "meeting" },
+  ]);
+  const { game } = ctx;
+  const send = (game as any).send;
+  (game as any).send = (id: string, msg: any) => {
+    if (msg.type === "cam") cams.push({ to: id, playerId: msg.playerId });
+    send(id, msg);
+  };
+  const { impostor, crew } = startPlaying(ctx);
+  const [watcher, subject, other] = crew;
+
+  // Alive and not at Security: no.
+  assert.throws(() => ctx.act(watcher, "cam_watch", { on: true }), /Security sign/);
+  assert.equal(game.viewFor(subject.id).me.camWanted, false);
+
+  ctx.act(watcher, "checkpoint", { stationId: ctx.station("Security").id, method: "sign" });
+  assert.equal(game.viewFor(watcher.id).me.canWatchCams, true);
+  ctx.act(watcher, "cam_watch", { on: true });
+  assert.equal(game.viewFor(subject.id).me.camWanted, true, "phones stream once someone watches");
+  assert.equal(game.viewFor(watcher.id).me.camWanted, false, "nobody else is watching the watcher");
+
+  ctx.act(subject, "cam_frame", { jpeg: "AAAA" });
+  assert.deepEqual(cams, [{ to: watcher.id, playerId: subject.id }]);
+  ctx.act(other, "cam_frame", { jpeg: "AAAA" });
+  ctx.act(other, "cam_frame", { jpeg: "BBBB" }); // too soon: dropped
+  assert.equal(cams.length, 2);
+  assert.throws(() => ctx.act(other, "cam_frame", { jpeg: 5 }), /Bad camera frame/);
+
+  // The Security check-in wears off: they stop watching.
+  ctx.advance(game.settings.checkpointTtlSec * 1000 + 1000);
+  assert.equal(game.camWatchers.has(watcher.id), false);
+  assert.equal(game.viewFor(subject.id).me.camWanted, false);
+
+  // Dead players can always watch during play.
+  impostor.alive = true;
+  other.alive = false;
+  assert.equal(game.viewFor(other.id).me.canWatchCams, true);
+  ctx.act(other, "cam_watch", { on: true });
+  assert.ok(game.camWatchers.has(other.id));
+  ctx.act(other, "cam_watch", { on: false });
+  assert.equal(game.camWatchers.size, 0);
+});

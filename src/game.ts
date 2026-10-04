@@ -24,7 +24,8 @@ import { BotWalker, fusePositions, parseReport, type PlayerPosition, type Positi
 export type Outbound =
   | { type: "state"; state: StateView }
   | { type: "event"; event: string; data?: unknown }
-  | { type: "positions"; positions: PlayerPosition[] };
+  | { type: "positions"; positions: PlayerPosition[] }
+  | { type: "cam"; playerId: string; jpeg: string; at: number };
 
 export type Send = (playerId: string, msg: Outbound) => void;
 
@@ -141,6 +142,9 @@ export class Game {
   sightings = new Map<string, Map<string, Sighting>>();
   /** Each phone's latest position estimate (not persisted: it's stale after a restart anyway). */
   positionReports = new Map<string, PositionReport>();
+  /** Security cameras: who is watching, and each phone's latest front-camera frame (JPEG, base64). Not persisted. */
+  camWatchers = new Set<string>();
+  private camFrames = new Map<string, { jpeg: string; at: number }>();
   private botWalker = new BotWalker();
   private positionsSentAt = 0;
   private lastPositionsSent = new Map<string, string>();
@@ -252,6 +256,8 @@ export class Game {
       case "ack_role": result = this.ackRole(p); break;
       case "proximity": result = this.proximity(p, payload); break;
       case "position": result = this.reportPosition(p, payload); break;
+      case "cam_watch": result = this.camWatch(p, payload); break;
+      case "cam_frame": result = this.camFrame(p, payload); break;
       case "checkpoint": result = this.checkpoint(p, payload); break;
       case "task_start": result = this.taskStart(p, payload); break;
       case "task_complete": result = this.taskComplete(p, payload); break;
@@ -265,7 +271,8 @@ export class Game {
       case "restart": result = this.restart(p); break;
       default: throw new GameError(`Unknown action: ${action}`);
     }
-    if (action === "position") return result; // only feeds the positions stream, never the game state
+    // Positions and camera frames only feed their own streams, never the game state.
+    if (action === "position" || action === "cam_frame") return result;
     this.broadcast();
     if (action !== "proximity") this.hooks.onChange?.();
     return result;
@@ -587,6 +594,55 @@ export class Game {
   /** A phone's own position estimate (see positions.ts). */
   private reportPosition(p: Player, payload: unknown) {
     this.positionReports.set(p.id, parseReport(payload, this.now()));
+  }
+
+  // ------------------------------------------------------------ security cameras
+
+  /** Dead players can always watch during play; the living only right after scanning the Security sign. */
+  canWatchCams(p: Player): boolean {
+    if (this.phase !== "PLAYING") return false;
+    if (!p.alive) return true;
+    const cp = p.lastCheckpoint;
+    const station = cp && this.stations.find((s) => s.id === cp.stationId);
+    return !!cp && station?.kind === "security" && this.now() - cp.at <= this.settings.checkpointTtlSec * 1000;
+  }
+
+  private camWatch(p: Player, { on }: { on?: boolean }) {
+    if (!on) {
+      this.camWatchers.delete(p.id);
+      return;
+    }
+    if (!this.canWatchCams(p)) throw new GameError("Scan the Security sign to watch the cameras");
+    this.camWatchers.add(p.id);
+    // Show what we already have straight away.
+    for (const [playerId, frame] of this.camFrames) {
+      if (playerId !== p.id) this.send(p.id, { type: "cam", playerId, ...frame });
+    }
+  }
+
+  /** A phone's front-camera frame: relayed to whoever is watching (about 4 a second at most). */
+  private camFrame(p: Player, { jpeg }: { jpeg?: unknown }) {
+    if (this.phase !== "PLAYING") return;
+    if (typeof jpeg !== "string" || jpeg.length === 0 || jpeg.length > 80_000) throw new GameError("Bad camera frame");
+    const now = this.now();
+    const last = this.camFrames.get(p.id);
+    if (last && now - last.at < 200) return;
+    const frame = { jpeg, at: now };
+    this.camFrames.set(p.id, frame);
+    for (const id of this.camWatchers) {
+      if (id !== p.id) this.send(id, { type: "cam", playerId: p.id, ...frame });
+    }
+  }
+
+  /** Drop watchers who can't watch any more (left Security, meeting called); forget frames outside play. */
+  private pruneCams() {
+    const before = this.camWatchers.size;
+    for (const id of this.camWatchers) {
+      const p = this.players.get(id);
+      if (!p || !this.canWatchCams(p)) this.camWatchers.delete(id);
+    }
+    if (this.phase !== "PLAYING") this.camFrames.clear();
+    return before !== this.camWatchers.size;
   }
 
   /** Everyone's fused position, or [] when live positions are off. */
@@ -1082,6 +1138,7 @@ export class Game {
     } else if (this.phaseDeadline !== null && now >= this.phaseDeadline) {
       this.advance();
     }
+    this.pruneCams();
     this.broadcast();
     this.broadcastPositions();
     if (this.phase + this.phaseDeadline !== before) this.hooks.onChange?.();
@@ -1242,6 +1299,9 @@ export class Game {
         killTargets: this.killTargets(me).map((t) => t.id),
         nearbyBodies: this.nearbyBodies(me).map((b) => b.id),
         sabotageAvailableAt: me.role === "impostor" ? this.sabotageAvailableAt : null,
+        canWatchCams: this.canWatchCams(me),
+        // Someone else is watching the cameras: send your front-camera frames.
+        camWanted: this.phase === "PLAYING" && !me.bot && [...this.camWatchers].some((id) => id !== me.id),
       },
       emergencyAvailableAt: this.emergencyAvailableAt,
       meeting: this.meeting
@@ -1324,6 +1384,8 @@ export interface StateView {
     killTargets: string[];
     nearbyBodies: string[];
     sabotageAvailableAt: number | null;
+    canWatchCams: boolean;
+    camWanted: boolean;
   };
   emergencyAvailableAt: number;
   meeting: { kind: MeetingKind; calledBy: string | null; bodyId: string | null; stage: string; arrived: string[] } | null;
