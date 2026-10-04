@@ -64,6 +64,10 @@ All settings live in `src/types.ts` (`DEFAULT_SETTINGS`) and can be changed by a
   lobby's signs (keeping players' own signs and any special signs the saved game doesn't have); its signs count toward
   the sign total, so players only photograph the rest. Picking none restores the lobby's signs.
 - **Testing:** `forcedImpostorIds` (only the host sees it), `devSkipProximity`, `devSkipCheckpoint`, `minPlayers`.
+- **Security cameras:** dead players (any time during play) and players who just scanned the `security` sign can
+  `cam_watch` `{ on }`. While anyone else is watching, every player's view has `me.camWanted` and their phone sends
+  low-rate front-camera frames (`cam_frame` `{ jpeg }`, base64, ≤ ~5/s); the server relays each as
+  `{ type: "cam", playerId, jpeg, at }` to the watchers only and drops watchers whose Security check-in expires.
 - **Live positions:** `livePositions` (default on; anyone can flip it, even mid-game). Each phone reports its
   own estimate about every 2 s (`position` action: `{ lat, lng, accuracyM, roomId?, room?, levelDelta?, sources? }`),
   built from sign check-ins, steps and compass, accuracy-weighted GPS and the floor plan; no beacons. The server
