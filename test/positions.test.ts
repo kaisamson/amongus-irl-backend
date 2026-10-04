@@ -125,8 +125,10 @@ function setup() {
   return { game, host, other, positions, states, advance };
 }
 
-test("positions only go out once the host turns live positions on", () => {
+test("positions go out while live positions are on (the default), and stop when it's off", () => {
   const { game, host, other, positions, advance } = setup();
+  assert.equal(game.settings.livePositions, true);
+  game.handle(host.id, "update_settings", { livePositions: false });
   game.handle(other.id, "position", { lat: LAT, lng: LNG, accuracyM: 6 });
   advance(1000);
   assert.equal(positions(host).length, 0);
@@ -154,6 +156,7 @@ test("live positions can be flipped mid-game, but not other settings", () => {
   game.handle(host.id, "add_station", { name: "A", kind: "task" });
   game.handle(host.id, "add_station", { name: "B", kind: "task" });
   game.handle(host.id, "add_station", { name: "Meet", kind: "meeting" });
+  game.handle(host.id, "add_station", { name: "Red button", kind: "emergency" });
   game.handle(host.id, "start_game", {});
   game.handle(host.id, "update_settings", { livePositions: true });
   assert.equal(game.settings.livePositions, true);

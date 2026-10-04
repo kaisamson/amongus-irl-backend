@@ -10,7 +10,8 @@ export type Phase =
 export type Role = "crewmate" | "impostor";
 
 /** What a physical checkpoint is used for. */
-export type StationKind = "task" | "meeting" | "emergency" | "reactor" | "electrical";
+/** `security` (cameras) and `admin` (room occupancy) are optional signs for the Skeld-style rooms. */
+export type StationKind = "task" | "meeting" | "emergency" | "reactor" | "electrical" | "security" | "admin";
 
 export type TaskType = "wiring" | "upload" | "sequence" | "delivery" | "swipe" | "shields" | "o2" | "scan" | "divert";
 
@@ -80,7 +81,7 @@ export interface Settings {
   sabotageCooldownSec: number;
   reactorSec: number;
   reactorWindowSec: number;
-  /** Testing: everyone sees everyone's estimated position on the map, in the lobby and in game. */
+  /** Everyone sees everyone's estimated position on the map, in the lobby and in game. On by default. */
   livePositions: boolean;
 }
 
@@ -116,7 +117,7 @@ export const DEFAULT_SETTINGS: Settings = {
   sabotageCooldownSec: 45,
   reactorSec: 45,
   reactorWindowSec: 10,
-  livePositions: false,
+  livePositions: true,
 };
 
 export interface Task {

@@ -18,7 +18,9 @@ function setup(n = 4, stations?: Partial<Station>[]) {
     { name: "Comms", kind: "task" },
     { name: "Cafeteria", kind: "meeting" },
   ];
-  for (const s of defs) game.handle(host.id, "add_station", s);
+  // Every map needs a red button to start.
+  const withButton = defs.some((s) => s.kind === "emergency") ? defs : [...defs, { name: "Red button", kind: "emergency" as const }];
+  for (const s of withButton) game.handle(host.id, "add_station", s);
   const act = (p: Player, action: string, payload: any = {}) => game.handle(p.id, action, payload);
   const advance = (ms: number) => {
     clock += ms;
@@ -113,8 +115,8 @@ test("two players can start without signs, reveal roles, and keep playing after 
   const { impostor, crew } = startPlaying(ctx);
   assert.equal(crew.length, 1);
   assert.equal(game.viewFor(host.id).taskProgress.total, 0);
-  game.stations.push({ id: "btn", name: "Button", kind: "emergency", radiusM: 10 });
   act(crew[0], "call_emergency");
+  act(host, "host_advance"); // gathering at the red button -> discussion
   act(host, "host_advance");
   for (const p of players) act(p, "vote", { targetId: null });
   act(host, "host_advance");
@@ -343,11 +345,11 @@ test("tie vote ejects nobody and play resumes", () => {
   const ctx = setup(4, [{ name: "X", kind: "task" }]);
   const { impostor, crew } = startPlaying(ctx);
   ctx.game.settings.devSkipCheckpoint = true;
-  ctx.game.stations.push({ id: "btn", name: "Button", kind: "emergency", radiusM: 10 });
   ctx.advance(ctx.game.settings.emergencyCooldownSec * 1000);
   ctx.act(crew[0], "call_emergency");
-  assert.equal(ctx.game.meeting!.stage, "discussion", "no meeting station -> skip gathering");
+  assert.equal(ctx.game.meeting!.stage, "gathering", "no meeting point: everyone gathers at the red button");
   assert.throws(() => ctx.act(crew[0], "call_emergency"), /Not allowed/);
+  ctx.act(ctx.host, "host_advance"); // gathering -> discussion
   ctx.act(ctx.host, "host_advance");
   ctx.act(crew[0], "vote", { targetId: impostor.id });
   ctx.act(impostor, "vote", { targetId: crew[0].id });
@@ -394,7 +396,7 @@ test("restart returns everyone to the lobby with stations kept", () => {
   startPlaying(ctx);
   ctx.act(ctx.host, "restart");
   assert.equal(ctx.game.phase, "LOBBY");
-  assert.equal(ctx.game.stations.length, 3);
+  assert.equal(ctx.game.stations.length, 4);
   assert.ok(ctx.players.every((p) => p.role === null && p.alive));
   ctx.act(ctx.host, "start_game");
   assert.equal(ctx.game.phase, "ROLE_REVEAL");
@@ -436,6 +438,7 @@ test("hooks: onChange fires for actions but not BLE reports; onGameOver gets a s
   game.settings.signsPerPlayer = 0;
   const players = ["A", "B", "C", "D"].map((n) => game.addPlayer(n));
   game.handle(players[0].id, "add_station", { name: "T", kind: "task" });
+  game.handle(players[0].id, "add_station", { name: "Red button", kind: "emergency" });
   game.handle(players[0].id, "update_settings", { devSkipProximity: true, killCooldownSec: 0 });
   game.handle(players[0].id, "start_game", {});
   const before = changes;
@@ -538,6 +541,7 @@ test("host-added bots fill a lobby and keep the game moving", () => {
   const host = game.addPlayer("Host");
   const friend = game.addPlayer("Friend");
   game.handle(host.id, "add_station", { name: "Sign", kind: "task" });
+  game.handle(host.id, "add_station", { name: "Red button", kind: "emergency" });
   assert.throws(() => game.handle(friend.id, "add_bot", {}), /Only the host/);
   game.handle(host.id, "add_bot", {});
   game.handle(host.id, "add_bot", {});
@@ -583,12 +587,15 @@ test("every player must add their signs before the host can start", () => {
     for (let i = 0; i < n; i++) game.handle(p.id, "add_station", { name: `${p.name} sign ${i}`, kind: "task" });
   };
 
-  // Players add task signs; special stations stay host-only.
+  // Players add task signs; anyone can set the special signs too, and the red button is required.
   addSign(guest, 3);
-  assert.throws(() => game.handle(guest.id, "add_station", { name: "Cafe", kind: "meeting" }), /Only the host/);
   assert.ok(game.stations.every((s) => s.addedBy === guest.id));
-  addSign(host, 2);
-  assert.throws(() => game.handle(host.id, "start_game", {}), /Waiting for Host to add 3 signs/);
+  addSign(host, 3);
+  assert.throws(() => game.handle(host.id, "start_game", {}), /red button/);
+  game.handle(guest.id, "add_station", { name: "Red button", kind: "emergency" });
+  assert.equal(game.stations.find((s) => s.kind === "emergency")?.addedBy, undefined, "special signs belong to the map");
+  game.handle(host.id, "delete_station", { stationId: game.stations.find((s) => s.addedBy === host.id)!.id });
+  assert.throws(() => game.handle(host.id, "start_game", {}), /Waiting for Host to add their signs/);
   addSign(host, 1);
 
   // A player can delete their own sign, not someone else's; the host can delete any.
@@ -614,6 +621,7 @@ test("signs per player is validated, 0 turns the requirement off, kicked players
   assert.equal(game.stations.length, 0);
   game.handle(host.id, "update_settings", { signsPerPlayer: 0 });
   game.addPlayer("Other");
+  game.handle(host.id, "add_station", { name: "Red button", kind: "emergency" });
   game.handle(host.id, "start_game", {});
   assert.equal(game.phase, "ROLE_REVEAL");
 });
@@ -635,17 +643,19 @@ test("any player can use a saved game's signs, switch games, and go back to none
 
   assert.equal(game.useGameset(guest.id, demo), 3, "2 from the game + the guest's own sign");
   assert.deepEqual(game.gameset, { id: "demo", name: "Judging demo" });
-  assert.equal(game.settings.signsPerPlayer, 0);
-  assert.ok(!game.stations.some((s) => s.id === "cafe"), "the game's stations replace the lobby's");
+  assert.equal(game.settings.signsPerPlayer, 3, "the requirement stays; the saved game's signs count toward it");
+  // 3 each × 2 players = 6 wanted, the saved game brings 2, so the other 4 are split 2 + 2.
+  assert.deepEqual(game.viewFor(guest.id).signQuotas, { [host.id]: 2, [guest.id]: 2 });
+  assert.ok(game.stations.some((s) => s.id === "cafe"), "the saved game has no meeting point, so the lobby's stays");
   assert.ok(game.stations.filter((s) => s.fromGameset === "demo").every((s) => s.addedBy === undefined));
   assert.equal(game.viewFor(guest.id).gameset?.name, "Judging demo");
 
   game.useGameset(host.id, other); // switching keeps the original "before" state
-  assert.deepEqual(game.stations.map((s) => s.name).sort(), ["3000", "Guest sign"]);
+  assert.deepEqual(game.stations.map((s) => s.name).sort(), ["3000", "Cafe", "Guest sign"]);
 
   game.useGameset(host.id, null);
   assert.equal(game.gameset, null);
-  assert.equal(game.settings.signsPerPlayer, 3, "requirement restored");
+  assert.equal(game.settings.signsPerPlayer, 3);
   assert.deepEqual(game.stations.map((s) => s.id).sort(), ["cafe", game.stations.find((s) => s.addedBy)!.id].sort());
 
   // Survives a restart, then the game starts with the loaded signs.
@@ -654,6 +664,7 @@ test("any player can use a saved game's signs, switch games, and go back to none
   assert.equal(restored.gameset?.id, "demo");
   restored.useGameset(host.id, null);
   assert.ok(restored.stations.some((s) => s.id === "cafe"), "before-state restored after a restart too");
+  game.handle(host.id, "update_settings", { signsPerPlayer: 0 });
   game.handle(host.id, "start_game", {});
   assert.equal(game.phase, "ROLE_REVEAL");
   assert.throws(() => game.useGameset(host.id, null), /Not allowed/);
@@ -667,4 +678,58 @@ test("buildStation validates and normalizes signs from phones", () => {
   assert.equal(s.signText, "2005");
   assert.equal(s.radiusM, 15);
   assert.equal(s.fromGameset, "g");
+});
+
+test("a saved game's signs count toward the total and the rest is split evenly in join order", () => {
+  const game = new Game("SPLT", "m", [], () => {}, {});
+  const [a, b, c] = ["A", "B", "C"].map((n) => game.addPlayer(n));
+  game.handle(a.id, "add_bot", {});
+  const preset = (n: number) => ({
+    id: `g${n}`, name: `G${n}`, createdAt: 1, updatedAt: 1,
+    stations: Array.from({ length: n }, (_, i) => ({ id: `s${i}`, name: `S${i}`, kind: "task" as const, radiusM: 15 })),
+  });
+  // 3 each × 3 people = 9; 4 preset leaves 5: 2, 2, 1. Bots owe nothing.
+  game.useGameset(a.id, preset(4));
+  assert.deepEqual(game.signQuotas(), { [a.id]: 2, [b.id]: 2, [c.id]: 1 });
+  // Enough preset signs: nobody has to photograph anything.
+  game.useGameset(a.id, preset(12));
+  assert.deepEqual(game.signQuotas(), { [a.id]: 0, [b.id]: 0, [c.id]: 0 });
+  assert.equal(game.playersMissingSigns().length, 0);
+  // No saved game: the full amount each.
+  game.useGameset(a.id, null);
+  assert.deepEqual(game.signQuotas(), { [a.id]: 3, [b.id]: 3, [c.id]: 3 });
+});
+
+test("special signs: anyone sets them, a new one replaces the old, reactor keeps two", () => {
+  const game = new Game("SPEC", "m", [], () => {}, {});
+  const host = game.addPlayer("Host");
+  const guest = game.addPlayer("Guest");
+  game.handle(guest.id, "add_station", { name: "Red button", kind: "emergency", signText: "OLD" });
+  game.handle(guest.id, "add_station", { name: "Red button", kind: "emergency", signText: "NEW" });
+  assert.deepEqual(game.stations.filter((s) => s.kind === "emergency").map((s) => s.signText), ["NEW"]);
+  for (const t of ["R1", "R2", "R3"]) game.handle(host.id, "add_station", { name: "Reactor", kind: "reactor", signText: t });
+  assert.deepEqual(game.stations.filter((s) => s.kind === "reactor").map((s) => s.signText), ["R2", "R3"]);
+  game.handle(guest.id, "add_station", { name: "Security", kind: "security" });
+  game.handle(guest.id, "add_station", { name: "Admin", kind: "admin" });
+  assert.ok(game.stations.some((s) => s.kind === "security") && game.stations.some((s) => s.kind === "admin"));
+  const reactor = game.stations.find((s) => s.kind === "reactor")!;
+  game.handle(guest.id, "delete_station", { stationId: reactor.id });
+  assert.equal(game.stations.filter((s) => s.kind === "reactor").length, 1);
+});
+
+test("loading a saved game keeps lobby special signs it doesn't have", () => {
+  const game = new Game("KEEP", "m", [], () => {}, {});
+  const host = game.addPlayer("Host");
+  game.handle(host.id, "add_station", { name: "Red button", kind: "emergency" });
+  game.handle(host.id, "add_station", { name: "Lights", kind: "electrical" });
+  const demo = {
+    id: "d", name: "Demo", createdAt: 1, updatedAt: 1,
+    stations: [{ id: "x", name: "Their button", kind: "emergency" as const, radiusM: 15 }],
+  };
+  game.useGameset(host.id, demo);
+  assert.deepEqual(game.stations.map((s) => s.name).sort(), ["Lights", "Their button"]);
+  // A special sign added while the saved game is in use survives going back to none.
+  game.handle(host.id, "add_station", { name: "Admin", kind: "admin" });
+  game.useGameset(host.id, null);
+  assert.deepEqual(game.stations.map((s) => s.name).sort(), ["Admin", "Lights", "Red button"]);
 });
