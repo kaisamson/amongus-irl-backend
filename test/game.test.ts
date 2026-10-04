@@ -63,6 +63,30 @@ test("players receive distinct colors that survive snapshots", () => {
   assert.deepEqual([...restored.players.values()].map((player) => player.color), PLAYER_COLORS);
 });
 
+test("players can pick a free color and set a face in the lobby only", () => {
+  const ctx = setup(4, []);
+  const [a, b] = ctx.players;
+  ctx.act(a, "set_color", { color: "cyan" });
+  assert.equal(a.color, "cyan");
+  assert.throws(() => ctx.act(b, "set_color", { color: "cyan" }), /taken/);
+  assert.throws(() => ctx.act(b, "set_color", { color: "plaid" }), /Unknown color/);
+  ctx.act(a, "set_color", { color: "cyan" }); // re-picking your own color is fine
+
+  assert.equal(ctx.game.viewFor(b.id).players.find((p) => p.id === a.id)?.faceId, null);
+  ctx.act(a, "set_face", { faceId: "abc123" });
+  assert.equal(ctx.game.viewFor(b.id).players.find((p) => p.id === a.id)?.faceId, "abc123");
+  assert.throws(() => ctx.act(a, "set_face", { faceId: "../etc" }), /Bad face id/);
+  const restored = Game.fromSnapshot(JSON.parse(JSON.stringify(ctx.game.toSnapshot())), () => {});
+  assert.equal(restored.players.get(a.id)?.faceId, "abc123");
+  assert.equal(restored.players.get(a.id)?.color, "cyan");
+  ctx.act(a, "set_face", { faceId: null });
+  assert.equal(ctx.game.viewFor(a.id).players.find((p) => p.id === a.id)?.faceId, null);
+
+  ctx.act(ctx.host, "start_game");
+  assert.throws(() => ctx.act(a, "set_color", { color: "lime" }), /Not allowed/);
+  assert.throws(() => ctx.act(a, "set_face", { faceId: "abc123" }), /Not allowed/);
+});
+
 test("restoring a legacy snapshot assigns and persists distinct player colors", () => {
   const ctx = setup(4, []);
   const snapshot = JSON.parse(JSON.stringify(ctx.game.toSnapshot()));
