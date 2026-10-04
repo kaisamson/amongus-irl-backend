@@ -723,7 +723,12 @@ export class Game {
 
   /** A phone's own position estimate (see positions.ts). */
   private reportPosition(p: Player, payload: unknown) {
-    this.positionReports.set(p.id, parseReport(payload, this.now()));
+    const report = parseReport(payload, this.now());
+    this.positionReports.set(p.id, report);
+    // Killed with no position known: where the phone says it is right after is where the body fell.
+    if (p.body && !p.body.reported && !p.body.spot && report.at - p.body.at <= 20_000) {
+      p.body.spot = { lat: report.lat, lng: report.lng, buildingId: report.buildingId, floorId: report.floorId };
+    }
   }
 
   // ------------------------------------------------------------ security cameras
@@ -922,14 +927,14 @@ export class Game {
     });
   }
 
-  /** Unfound bodies within sight range of a player (same floor), for their map. */
+  /** Unfound bodies within sight range of a player (same floor), for their map; always their own. */
   private bodiesInView(p: Player, positions: PlayerPosition[]): (BodySpot & { playerId: string })[] {
     if (this.phase !== "PLAYING") return [];
     const mine = this.freshPosition(p.id, positions);
-    if (!mine) return [];
     return [...this.players.values()].flatMap((b) => {
       const spot = b.body && !b.body.reported ? b.body.spot : undefined;
-      if (!spot || b.id === p.id || !sameFloor(mine, spot) || metersBetween(mine, spot) > BODY_VIEW_M) return [];
+      if (!spot) return [];
+      if (b.id !== p.id && (!mine || !sameFloor(mine, spot) || metersBetween(mine, spot) > BODY_VIEW_M)) return [];
       return [{ playerId: b.id, ...spot }];
     });
   }
@@ -1063,9 +1068,11 @@ export class Game {
     if (target.role === "impostor") throw new GameError("Can't kill an impostor");
 
     target.alive = false;
-    // Where the body lies: the victim's position, else the killer's (they were next to each other).
+    // Where the body lies: the victim's position, else the killer's (they were next to each other); recent ones
+    // first, else the last known. With none at all, the victim's next report fills it in (reportPosition).
     const positions = this.currentPositions();
-    const at = this.freshPosition(target.id, positions) ?? this.freshPosition(p.id, positions);
+    const at = this.freshPosition(target.id, positions) ?? this.freshPosition(p.id, positions)
+      ?? positions.find((x) => x.playerId === target.id) ?? positions.find((x) => x.playerId === p.id);
     const spot: BodySpot | undefined = at
       ? { lat: at.lat, lng: at.lng, buildingId: at.buildingId, floorId: at.floorId }
       : undefined;

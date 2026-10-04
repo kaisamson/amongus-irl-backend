@@ -1064,3 +1064,19 @@ test("admin counts an unfound body where it fell, not where its ghost went", () 
   assert.equal(people.length, 4, "three living and the body");
   assert.ok(people.every((x) => Math.abs(x.lat - 49.2778) < 1e-6), "nobody counted 100 m away");
 });
+
+test("a body with no position at the kill takes its spot from the victim's next report", () => {
+  const ctx = setup(4);
+  ctx.game.settings.devSkipProximity = true;
+  const { impostor, crew } = startPlaying(ctx);
+  ctx.advance(ctx.game.settings.killCooldownSec * 1000);
+  ctx.act(impostor, "kill", { targetId: crew[0].id });
+  assert.equal(crew[0].body!.spot, undefined, "nobody had a position");
+  ctx.advance(2000);
+  ctx.act(crew[0], "position", { lat: 49.2778, lng: -122.914, accuracyM: 3, buildingId: "ASB", floorId: "09" });
+  assert.equal(crew[0].body!.spot!.lat, 49.2778);
+  assert.equal(ctx.game.viewFor(crew[0].id).me.bodies[0].playerId, crew[0].id, "the victim's own map gets it");
+  ctx.advance(30_000);
+  ctx.act(crew[0], "position", { lat: 49.2790, lng: -122.914, accuracyM: 3 });
+  assert.equal(crew[0].body!.spot!.lat, 49.2778, "the ghost walking off doesn't move the body");
+});
