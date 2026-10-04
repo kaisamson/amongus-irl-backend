@@ -586,7 +586,10 @@ export class Game {
     for (const s of sightings) {
       const subject = byToken.get(s.token);
       if (subject && subject.id !== p.id && typeof s.rssi === "number") {
-        mine.set(subject.id, { rssi: s.rssi, at: now });
+        const keep = Math.max(this.settings.proximityFreshSec, 1) * 1000;
+        const recent = (mine.get(subject.id)?.recent ?? []).filter((r) => now - r.at <= keep);
+        recent.push({ rssi: s.rssi, at: now });
+        mine.set(subject.id, { rssi: s.rssi, at: now, recent });
       }
     }
   }
@@ -686,14 +689,21 @@ export class Game {
     }
   }
 
-  /** Server-side proximity check: either phone hearing the other above threshold recently counts. */
+  /**
+   * Server-side proximity check: either phone hearing the other above threshold counts. Optimistic about
+   * leaving: the strongest reading of the last `proximityFreshSec` counts, so one weak reading (a body or
+   * pocket in the way) doesn't drop someone out of range; walking away takes that long to register.
+   * Coming into range is still immediate.
+   */
   isNear(a: Player, b: Player, threshold: number): boolean {
     if (this.settings.devSkipProximity) return true;
     const fresh = this.settings.proximityFreshSec * 1000;
     const now = this.now();
-    return [this.sightings.get(a.id)?.get(b.id), this.sightings.get(b.id)?.get(a.id)].some(
-      (s) => s !== undefined && now - s.at <= fresh && s.rssi >= threshold,
-    );
+    return [this.sightings.get(a.id)?.get(b.id), this.sightings.get(b.id)?.get(a.id)].some((s) => {
+      if (!s) return false;
+      const readings = s.recent ?? [{ rssi: s.rssi, at: s.at }];
+      return readings.some((r) => now - r.at <= fresh && r.rssi >= threshold);
+    });
   }
 
   private killTargets(p: Player): Player[] {
