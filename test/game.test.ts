@@ -37,6 +37,59 @@ function startPlaying(ctx: ReturnType<typeof setup>) {
   return { impostor, crew };
 }
 
+test("a lobby without signs starts role reveal and can enter play", () => {
+  const ctx = setup(4, []);
+  ctx.act(ctx.host, "start_game");
+  assert.equal(ctx.game.phase, "ROLE_REVEAL");
+  assert.equal(ctx.players.filter((p) => p.role === "impostor").length, 1);
+  for (const p of ctx.players) {
+    assert.equal(p.tasks.length, 0);
+    assert.ok(ctx.events(p).includes("ROLE_ASSIGNED"));
+    ctx.act(p, "ack_role");
+  }
+  assert.equal(ctx.game.phase, "PLAYING");
+  ctx.advance(1000);
+  assert.equal(ctx.game.phase, "PLAYING", "zero tasks must not immediately end the game");
+});
+
+test("starting without signs still requires the minimum player count", () => {
+  const ctx = setup(1, []);
+  assert.throws(() => ctx.act(ctx.host, "start_game"), /Need at least/);
+  assert.equal(ctx.game.phase, "LOBBY");
+});
+
+test("two players can start without signs, reveal roles, and keep playing after a skipped vote", () => {
+  const ctx = setup(2, []);
+  const { game, act, players, host } = ctx;
+  act(host, "update_settings", { devSkipCheckpoint: true, devSkipProximity: true, emergencyCooldownSec: 0 });
+  const { impostor, crew } = startPlaying(ctx);
+  assert.equal(crew.length, 1);
+  assert.equal(game.viewFor(host.id).taskProgress.total, 0);
+  game.stations.push({ id: "btn", name: "Button", kind: "emergency", radiusM: 10 });
+  act(crew[0], "call_emergency");
+  act(host, "host_advance");
+  for (const p of players) act(p, "vote", { targetId: null });
+  act(host, "host_advance");
+  assert.equal(game.phase, "PLAYING");
+  ctx.advance(game.settings.killCooldownSec * 1000);
+  act(impostor, "kill", { targetId: crew[0].id });
+  assert.equal(game.phase, "GAME_OVER");
+  assert.equal(game.winner, "impostors");
+});
+
+test("a two-player game still rejects two impostors", () => {
+  const ctx = setup(2, []);
+  ctx.act(ctx.host, "update_settings", { impostors: 2 });
+  assert.throws(() => ctx.act(ctx.host, "start_game"), /Too many impostors/);
+  assert.equal(ctx.game.phase, "LOBBY");
+});
+
+test("a host can still require more than two players", () => {
+  const ctx = setup(2, []);
+  ctx.act(ctx.host, "update_settings", { minPlayers: 4 });
+  assert.throws(() => ctx.act(ctx.host, "start_game"), /Need at least 4 players/);
+});
+
 test("full loop: kill -> report -> gather -> discuss -> vote -> crewmates win", () => {
   const ctx = setup(4);
   const { game, act, advance, events, station } = ctx;

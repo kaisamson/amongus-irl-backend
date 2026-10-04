@@ -78,7 +78,7 @@ export interface Settings {
 
 export const DEFAULT_SETTINGS: Settings = {
   impostors: 1,
-  minPlayers: 4,
+  minPlayers: 2,
   tasksPerPlayer: 3,
   killCooldownSec: 25,
   roleRevealSec: 15,

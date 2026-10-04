@@ -324,11 +324,11 @@ export class Game {
     const players = [...this.players.values()];
     const s = this.settings;
     if (players.length < s.minPlayers) throw new GameError(`Need at least ${s.minPlayers} players`);
-    if (s.impostors < 1 || s.impostors * 2 >= players.length) {
+    const isTwoPlayerGame = players.length === 2 && s.impostors === 1;
+    if (s.impostors < 1 || (!isTwoPlayerGame && s.impostors * 2 >= players.length)) {
       throw new GameError("Too many impostors for this many players");
     }
     const taskStations = this.stations.filter((st) => st.kind === "task");
-    if (taskStations.length === 0) throw new GameError("Add at least one sign first");
 
     const forced = s.forcedImpostorIds.filter((id) => this.players.has(id));
     if (forced.length > s.impostors) throw new GameError(`Only ${s.impostors} impostor(s): pick fewer forced impostors`);
@@ -808,7 +808,11 @@ export class Game {
     const progress = this.taskProgress();
     if (imps === 0) return this.endGame("crewmates", "All impostors were ejected");
     if (progress.total > 0 && progress.done >= progress.total) return this.endGame("crewmates", "All tasks completed");
-    if (imps >= crew) return this.endGame("impostors", "Impostors outnumber the crew");
+    // A two-player game starts at 1:1, so parity only wins once someone is eliminated.
+    const bothTwoPlayerParticipantsAlive = this.players.size === 2 && living.length === 2;
+    if (imps >= crew && !bothTwoPlayerParticipantsAlive) {
+      return this.endGame("impostors", "Impostors outnumber the crew");
+    }
     return false;
   }
 

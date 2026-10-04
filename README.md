@@ -44,6 +44,7 @@ Run **one instance** only, since live games live in that process's memory. Avoid
 
 All settings live in `src/types.ts` (`DEFAULT_SETTINGS`) and are changed by the host in the lobby.
 
+- **Starting:** new lobbies default to a minimum of two players. Two-player games assign one impostor and one crewmate, and remain playable until an elimination. Task signs are optional: without them, players have no tasks and the task-completion win condition is inactive. Existing lobbies keep their configured minimum; the host can change it to two in settings.
 - **Signs and tasks:** stations of kind `task` are just signs (photo + location). At game start each player gets
   `tasksPerPlayer` different signs, each with a random mini-game from `taskTypes`.
 - **Kill / report range:** `killDistanceM` and `reportDistanceM` are approximate meters, converted to RSSI cutoffs
