@@ -118,6 +118,8 @@ async function readJson(req: IncomingMessage): Promise<any> {
   return text ? JSON.parse(text) : {};
 }
 
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
 function json(res: ServerResponse, status: number, body: unknown) {
   res.writeHead(status, { "content-type": "application/json" });
   res.end(JSON.stringify(body));
@@ -153,6 +155,23 @@ const server = createServer(async (req, res) => {
       const body = await readJson(req);
       if (typeof body.jpegBase64 !== "string") return json(res, 400, { error: "jpegBase64 required" });
       return json(res, 200, { photoId: await store.savePhoto(Buffer.from(body.jpegBase64, "base64")) });
+    }
+    // POST /faces { pngBase64 } -> { faceId }   (players' cut-out heads, transparent PNG)
+    if (req.method === "POST" && url.pathname === "/faces") {
+      const body = await readJson(req);
+      if (typeof body.pngBase64 !== "string") return json(res, 400, { error: "pngBase64 required" });
+      const png = Buffer.from(body.pngBase64, "base64");
+      if (png.length > 1024 * 1024 || !png.subarray(0, 8).equals(PNG_SIGNATURE)) {
+        return json(res, 400, { error: "Face must be a PNG under 1 MB" });
+      }
+      return json(res, 200, { faceId: await store.savePhoto(png) });
+    }
+    // GET /faces/:id.png
+    if (req.method === "GET" && parts.length === 2 && parts[0] === "faces") {
+      const png = await store.getPhoto(parts[1].replace(/\.png$/, ""));
+      if (!png) return json(res, 404, { error: "Not found" });
+      res.writeHead(200, { "content-type": "image/png", "cache-control": "public, max-age=86400" });
+      return res.end(png);
     }
     // GET /photos/:id.jpg
     if (req.method === "GET" && parts.length === 2 && parts[0] === "photos") {

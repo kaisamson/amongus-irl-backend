@@ -205,6 +205,8 @@ export class Game {
       case "add_station": result = this.addStation(p, payload); break;
       case "delete_station": result = this.deleteStation(p, payload); break;
       case "kick": result = this.kick(p, payload); break;
+      case "set_color": result = this.setColor(p, payload); break;
+      case "set_face": result = this.setFace(p, payload); break;
       case "add_bot": result = this.addBot(p); break;
       case "start_game": result = this.startGame(p); break;
       case "ack_role": result = this.ackRole(p); break;
@@ -314,6 +316,25 @@ export class Game {
     } else if (this.phase === "VOTING") {
       for (const b of bots) if (b.alive && b.vote === undefined && this.phase === "VOTING") this.vote(b, { targetId: null });
     }
+  }
+
+  /** Lobby customization: pick any suit color nobody else is wearing. */
+  private setColor(p: Player, { color }: { color: string }) {
+    this.requirePhase("LOBBY");
+    if (!PLAYER_COLORS.includes(color as PlayerColor)) throw new GameError("Unknown color");
+    if ([...this.players.values()].some((o) => o.id !== p.id && o.color === color)) {
+      throw new GameError("That color is taken");
+    }
+    p.color = color as PlayerColor;
+  }
+
+  /** Lobby customization: a head uploaded to POST /faces, or null to remove it. */
+  private setFace(p: Player, { faceId }: { faceId: string | null }) {
+    this.requirePhase("LOBBY");
+    if (faceId !== null && (typeof faceId !== "string" || !/^[a-zA-Z0-9_-]{1,64}$/.test(faceId))) {
+      throw new GameError("Bad face id");
+    }
+    p.faceId = faceId;
   }
 
   private kick(p: Player, { playerId }: { playerId: string }) {
@@ -986,6 +1007,7 @@ export class Game {
         id: pl.id,
         name: pl.name,
         color: pl.color,
+        faceId: pl.faceId ?? null,
         isHost: pl.id === this.hostId,
         isBot: !!pl.bot,
         connected: pl.connected,
@@ -1071,6 +1093,7 @@ export interface PlayerView {
   id: string;
   name: string;
   color: PlayerColor;
+  faceId: string | null;
   isHost: boolean;
   isBot: boolean;
   connected: boolean;

@@ -153,6 +153,8 @@ export interface Player {
   name: string;
   /** Stable lobby suit color, assigned once by the authoritative server and persisted. */
   color: PlayerColor;
+  /** The player's cut-out head (transparent PNG), served at /faces/:faceId.png. Null = plain crewmate. */
+  faceId?: string | null;
   role: Role | null;
   alive: boolean;
   /** Whether other players have learned this player is dead (via a meeting or ejection). */
