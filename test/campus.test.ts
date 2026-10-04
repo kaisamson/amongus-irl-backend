@@ -76,3 +76,18 @@ test("signs keep their building and floor", () => {
   assert.equal(s.floorId, "2000");
   assert.equal(buildStation({ name: "x", kind: "task", buildingId: "" }).buildingId, undefined);
 });
+
+test("when SFU can't be reached, the saved snapshot is served and the reason is kept", async () => {
+  const saved = await new CampusCache(async () => [room("SUB", "2000", "212")], () => 5).fetchFresh();
+  const cache = new CampusCache(async () => {
+    throw new Error("fetch failed", { cause: new Error("connect ETIMEDOUT") });
+  }, () => 10, async () => saved);
+  const bundle = await cache.get();
+  assert.equal(bundle.version, "5");
+  assert.ok(bundle.json.includes("SUB"));
+  assert.equal(cache.lastError, "fetch failed: connect ETIMEDOUT");
+  // No snapshot either: unavailable, with the reason.
+  const none = new CampusCache(async () => { throw new Error("blocked"); });
+  await assert.rejects(() => none.get(), /unavailable/);
+  assert.equal(none.lastError, "blocked");
+});
