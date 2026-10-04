@@ -128,15 +128,15 @@ export interface Checkpoint {
 }
 
 export const PLAYER_COLORS = [
-  "red",
-  "blue",
-  "green",
-  "pink",
-  "orange",
-  "yellow",
-  "black",
   "white",
+  "black",
+  "red",
+  "yellow",
+  "green",
   "purple",
+  "pink",
+  "blue",
+  "orange",
   "brown",
   "cyan",
   "lime",
