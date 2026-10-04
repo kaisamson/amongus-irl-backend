@@ -80,6 +80,8 @@ export interface Settings {
   sabotageCooldownSec: number;
   reactorSec: number;
   reactorWindowSec: number;
+  /** Testing: everyone sees everyone's estimated position on the map, in the lobby and in game. */
+  livePositions: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -114,6 +116,7 @@ export const DEFAULT_SETTINGS: Settings = {
   sabotageCooldownSec: 45,
   reactorSec: 45,
   reactorWindowSec: 10,
+  livePositions: false,
 };
 
 export interface Task {
