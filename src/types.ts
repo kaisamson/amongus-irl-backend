@@ -32,6 +32,8 @@ export interface Station {
   photoId?: string;
   /** Player who photographed this sign in the lobby. Player signs belong to the game, not the saved venue map. */
   addedBy?: string;
+  /** Saved game (gameset) this sign was loaded from. Never written back to the venue map. */
+  fromGameset?: string;
 }
 
 export interface Settings {
@@ -210,5 +212,17 @@ export type Sabotage =
   | { kind: "lights"; deadline: null; activations: Record<string, number> };
 
 export type Winner = "crewmates" | "impostors";
+
+/**
+ * A saved game: a named collection of already-photographed signs (and optional special stations) the
+ * host can load into a lobby for a no-setup demo. Kept on the server until accounts exist.
+ */
+export interface Gameset {
+  id: string;
+  name: string;
+  stations: Station[];
+  createdAt: number;
+  updatedAt: number;
+}
 
 export class GameError extends Error {}

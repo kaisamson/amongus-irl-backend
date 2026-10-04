@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Game, rssiAtDistance, type Outbound } from "../src/game.ts";
+import { buildStation, Game, rssiAtDistance, type Outbound } from "../src/game.ts";
 import { DEFAULT_SETTINGS, PLAYER_COLORS, type Player, type Station } from "../src/types.ts";
 
 function setup(n = 4, stations?: Partial<Station>[]) {
@@ -615,23 +615,54 @@ test("signs per player is validated, 0 turns the requirement off, kicked players
   assert.equal(game.phase, "ROLE_REVEAL");
 });
 
-test("host can load a saved sign set into the lobby, which turns the sign requirement off", () => {
-  let changes = 0;
-  const game = new Game("SETS", "m", [], () => {}, { onChange: () => changes++ });
+test("host can use a saved game's signs, switch games, and go back to none", () => {
+  const game = new Game("SETS", "m", [{ id: "cafe", name: "Cafe", kind: "meeting", radiusM: 15 }], () => {}, {});
   const host = game.addPlayer("Host");
   const guest = game.addPlayer("Guest");
-  const set: Station[] = [
-    { id: "a", name: "2005", kind: "task", radiusM: 15, photoId: "p1", addedBy: "someone-else" },
-    { id: "b", name: "Sign 2", kind: "task", radiusM: 15, photoId: "p2" },
-    { id: "c", name: "Cafe", kind: "meeting", radiusM: 15 },
-  ];
-  assert.throws(() => game.applySignSet(guest.id, set), /Only the host/);
-  assert.equal(game.applySignSet(host.id, set), 2);
-  assert.equal(game.stations.length, 3);
-  assert.ok(game.stations.every((s) => s.addedBy === undefined), "loaded signs belong to nobody");
+  game.handle(guest.id, "add_station", { name: "Guest sign", kind: "task" });
+  const demo = {
+    id: "demo", name: "Judging demo", createdAt: 1, updatedAt: 1,
+    stations: [
+      { id: "a", name: "2005", kind: "task" as const, radiusM: 15, photoId: "p1", addedBy: "someone-else" },
+      { id: "b", name: "Sign 2", kind: "task" as const, radiusM: 15, photoId: "p2" },
+      { id: "btn", name: "Red button", kind: "emergency" as const, radiusM: 15 },
+    ],
+  };
+  const other = { ...demo, id: "other", name: "Other", stations: [{ id: "c", name: "3000", kind: "task" as const, radiusM: 15 }] };
+
+  assert.throws(() => game.useGameset(guest.id, demo), /Only the host/);
+  assert.equal(game.useGameset(host.id, demo), 3, "2 from the game + the guest's own sign");
+  assert.deepEqual(game.gameset, { id: "demo", name: "Judging demo" });
   assert.equal(game.settings.signsPerPlayer, 0);
-  assert.ok(changes > 0, "snapshotted");
+  assert.ok(!game.stations.some((s) => s.id === "cafe"), "the game's stations replace the lobby's");
+  assert.ok(game.stations.filter((s) => s.fromGameset === "demo").every((s) => s.addedBy === undefined));
+  assert.equal(game.viewFor(guest.id).gameset?.name, "Judging demo");
+
+  game.useGameset(host.id, other); // switching keeps the original "before" state
+  assert.deepEqual(game.stations.map((s) => s.name).sort(), ["3000", "Guest sign"]);
+
+  game.useGameset(host.id, null);
+  assert.equal(game.gameset, null);
+  assert.equal(game.settings.signsPerPlayer, 3, "requirement restored");
+  assert.deepEqual(game.stations.map((s) => s.id).sort(), ["cafe", game.stations.find((s) => s.addedBy)!.id].sort());
+
+  // Survives a restart, then the game starts with the loaded signs.
+  game.useGameset(host.id, demo);
+  const restored = Game.fromSnapshot(JSON.parse(JSON.stringify(game.toSnapshot())), () => {});
+  assert.equal(restored.gameset?.id, "demo");
+  restored.useGameset(host.id, null);
+  assert.ok(restored.stations.some((s) => s.id === "cafe"), "before-state restored after a restart too");
   game.handle(host.id, "start_game", {});
   assert.equal(game.phase, "ROLE_REVEAL");
-  assert.throws(() => game.applySignSet(host.id, set), /Not allowed/);
+  assert.throws(() => game.useGameset(host.id, null), /Not allowed/);
+});
+
+test("buildStation validates and normalizes signs from phones", () => {
+  assert.throws(() => buildStation({ name: "x", kind: "lounge" as any }), /name and kind/);
+  assert.throws(() => buildStation({ kind: "task" }), /name and kind/);
+  const s = buildStation({ name: "a".repeat(60), kind: "task", signText: "  2005 ", lat: 49.2, lng: -122.9 }, { fromGameset: "g" });
+  assert.equal(s.name.length, 40);
+  assert.equal(s.signText, "2005");
+  assert.equal(s.radiusM, 15);
+  assert.equal(s.fromGameset, "g");
 });
