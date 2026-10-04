@@ -614,3 +614,24 @@ test("signs per player is validated, 0 turns the requirement off, kicked players
   game.handle(host.id, "start_game", {});
   assert.equal(game.phase, "ROLE_REVEAL");
 });
+
+test("host can load a saved sign set into the lobby, which turns the sign requirement off", () => {
+  let changes = 0;
+  const game = new Game("SETS", "m", [], () => {}, { onChange: () => changes++ });
+  const host = game.addPlayer("Host");
+  const guest = game.addPlayer("Guest");
+  const set: Station[] = [
+    { id: "a", name: "2005", kind: "task", radiusM: 15, photoId: "p1", addedBy: "someone-else" },
+    { id: "b", name: "Sign 2", kind: "task", radiusM: 15, photoId: "p2" },
+    { id: "c", name: "Cafe", kind: "meeting", radiusM: 15 },
+  ];
+  assert.throws(() => game.applySignSet(guest.id, set), /Only the host/);
+  assert.equal(game.applySignSet(host.id, set), 2);
+  assert.equal(game.stations.length, 3);
+  assert.ok(game.stations.every((s) => s.addedBy === undefined), "loaded signs belong to nobody");
+  assert.equal(game.settings.signsPerPlayer, 0);
+  assert.ok(changes > 0, "snapshotted");
+  game.handle(host.id, "start_game", {});
+  assert.equal(game.phase, "ROLE_REVEAL");
+  assert.throws(() => game.applySignSet(host.id, set), /Not allowed/);
+});

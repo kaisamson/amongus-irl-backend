@@ -300,6 +300,25 @@ export class Game {
     this.hooks.onStationsChanged?.(this.stations);
   }
 
+  /**
+   * Host-only demo setup: replace the lobby's signs with a saved sign set. Those signs belong to nobody,
+   * so the per-player sign requirement is turned off (the host can turn it back on).
+   */
+  applySignSet(playerId: string, stations: Station[]) {
+    const p = this.players.get(playerId);
+    if (!p) throw new GameError("Unknown player");
+    this.requireHost(p);
+    this.requirePhase("LOBBY");
+    if (stations.length === 0) throw new GameError("That sign set is empty");
+    this.stations = stations.map(({ addedBy: _owner, ...station }) => station);
+    this.settings.signsPerPlayer = 0;
+    this.touch();
+    this.hooks.onStationsChanged?.(this.stations);
+    this.hooks.onChange?.();
+    this.broadcast();
+    return this.stations.filter((s) => s.kind === "task").length;
+  }
+
   /** Non-bot players who haven't added `signsPerPlayer` signs yet. */
   playersMissingSigns(): Player[] {
     const need = this.settings.signsPerPlayer;

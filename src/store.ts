@@ -22,7 +22,27 @@ export interface Store {
   deleteGame(code: string): Promise<void>;
   loadGame(code: string): Promise<GameSnapshot | null>;
   recordGame(summary: GameSummary): Promise<void>;
+  /** Named sets of already-photographed signs, so a demo lobby can be set up in one tap. */
+  saveSignSet(name: string, stations: Station[]): Promise<void>;
+  loadSignSet(name: string): Promise<Station[] | null>;
+  listSignSets(): Promise<SignSetSummary[]>;
   close(): Promise<void>;
+}
+
+export interface SignSetSummary {
+  name: string;
+  signs: number;
+  savedAt: number;
+}
+
+interface StoredSignSet {
+  name: string;
+  savedAt: number;
+  stations: Station[];
+}
+
+function summarize(set: StoredSignSet): SignSetSummary {
+  return { name: set.name, signs: set.stations.filter((s) => s.kind === "task").length, savedAt: set.savedAt };
 }
 
 const ID_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
@@ -115,6 +135,21 @@ export class RedisStore implements Store {
     await this.redis.multi().lpush("history", JSON.stringify(summary)).ltrim("history", 0, 999).exec();
   }
 
+  async saveSignSet(name: string, stations: Station[]) {
+    const set: StoredSignSet = { name, savedAt: Date.now(), stations };
+    await this.redis.hset("signsets", name, JSON.stringify(set));
+  }
+
+  async loadSignSet(name: string) {
+    const raw = await this.redis.hget("signsets", name);
+    return raw ? (JSON.parse(raw) as StoredSignSet).stations : null;
+  }
+
+  async listSignSets() {
+    const all = await this.redis.hvals("signsets");
+    return all.map((raw) => summarize(JSON.parse(raw))).sort((a, b) => b.savedAt - a.savedAt);
+  }
+
   async close() {
     await this.redis.quit();
   }
@@ -134,6 +169,13 @@ export class FileStore implements Store {
     this.photosDir = join(dataDir, "photos");
     this.gamesDir = join(dataDir, "games");
     this.historyFile = join(dataDir, "history.jsonl");
+    this.signSetsFile = join(dataDir, "signsets.json");
+  }
+
+  private signSetsFile: string;
+
+  private readSignSets(): Record<string, StoredSignSet> {
+    return existsSync(this.signSetsFile) ? JSON.parse(readFileSync(this.signSetsFile, "utf8")) : {};
   }
 
   async init() {
@@ -175,6 +217,20 @@ export class FileStore implements Store {
 
   async recordGame(summary: GameSummary) {
     writeFileSync(this.historyFile, JSON.stringify(summary) + "\n", { flag: "a" });
+  }
+
+  async saveSignSet(name: string, stations: Station[]) {
+    const sets = this.readSignSets();
+    sets[name] = { name, savedAt: Date.now(), stations };
+    writeFileSync(this.signSetsFile, JSON.stringify(sets, null, 2));
+  }
+
+  async loadSignSet(name: string) {
+    return this.readSignSets()[name]?.stations ?? null;
+  }
+
+  async listSignSets() {
+    return Object.values(this.readSignSets()).map(summarize).sort((a, b) => b.savedAt - a.savedAt);
   }
 
   async close() {}
