@@ -86,6 +86,9 @@ export interface Settings {
   reactorWindowSec: number;
   /** Everyone sees everyone's estimated position on the map, in the lobby and in game. On by default. */
   livePositions: boolean;
+  /** Play area: the SFU building and floor the game is on (campus map ids, e.g. "SUB" / "2000"). Empty = not set. */
+  mapBuildingId: string;
+  mapFloorId: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -121,6 +124,8 @@ export const DEFAULT_SETTINGS: Settings = {
   reactorSec: 45,
   reactorWindowSec: 10,
   livePositions: true,
+  mapBuildingId: "",
+  mapFloorId: "",
 };
 
 export interface Task {
