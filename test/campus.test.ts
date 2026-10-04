@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { gunzipSync } from "node:zlib";
 import { buildCampusBundle, CampusCache, floorOrder } from "../src/campus.ts";
-import { buildStation } from "../src/game.ts";
+import { buildStation, placeStation } from "../src/game.ts";
 
 const square = (x: number, y: number) => ({
   type: "Polygon",
@@ -75,6 +75,16 @@ test("signs keep their building and floor", () => {
   assert.equal(s.buildingId, "SUB");
   assert.equal(s.floorId, "2000");
   assert.equal(buildStation({ name: "x", kind: "task", buildingId: "" }).buildingId, undefined);
+});
+
+test("moving a saved sign changes only its pin, building and floor", () => {
+  const s = buildStation({ name: "Sign", kind: "emergency", lat: 49.1, lng: -122.9, buildingId: "SUB", floorId: "2000", photoId: "p1" });
+  const moved = placeStation(s, { lat: 49.2788, lng: -122.9187, buildingId: " AQ ", floorId: "3000" });
+  assert.deepEqual(moved, { ...s, lat: 49.2788, lng: -122.9187, buildingId: "AQ", floorId: "3000" });
+  assert.equal(placeStation(s, { lat: 49.2, lng: -122.9, buildingId: "" }).buildingId, undefined, "off campus clears it");
+  assert.throws(() => placeStation(s, { lat: "49", lng: -122.9 }));
+  assert.throws(() => placeStation(s, { lat: Number.NaN, lng: -122.9 }));
+  assert.throws(() => placeStation(s, { lat: 91, lng: 0 }));
 });
 
 test("when SFU can't be reached, the saved snapshot is served and the reason is kept", async () => {
