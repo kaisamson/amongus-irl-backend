@@ -851,3 +851,65 @@ test("lobby signs can be moved: special signs and your own by anyone, others' on
   assert.throws(() => game.handle(host.id, "move_station", { stationId: "nope", ...at }), /No sign/);
   assert.throws(() => game.handle(host.id, "move_station", { stationId: mine.id, lat: "x", lng: 0 }), /latitude/);
 });
+
+test("bots' tasks don't count: the humans finishing theirs wins for the crew", () => {
+  const ctx = setup(2, [{ name: "A", kind: "task" }, { name: "B", kind: "task" }]);
+  ctx.game.settings.taskTypes = ["wiring"];
+  ctx.act(ctx.host, "add_bot");
+  ctx.act(ctx.host, "add_bot");
+  ctx.act(ctx.host, "update_settings", { forcedImpostorIds: [ctx.host.id] });
+  ctx.act(ctx.host, "start_game");
+  for (const p of ctx.players) ctx.act(p, "ack_role");
+  ctx.advance(100); // bots acknowledge
+  assert.equal(ctx.game.phase, "PLAYING");
+  const crew = ctx.players[1];
+  for (const t of crew.tasks) {
+    ctx.act(crew, "checkpoint", { stationId: t.steps[0], method: "sign" });
+    ctx.act(crew, "task_complete", { taskId: t.id });
+  }
+  assert.equal(ctx.game.phase, "GAME_OVER");
+  assert.equal(ctx.game.winner, "crewmates");
+});
+
+test("with ghost tasks off, a dead crewmate's unfinished tasks don't block the task win", () => {
+  const ctx = setup(5, [{ name: "A", kind: "task" }, { name: "B", kind: "task" }]);
+  ctx.game.settings.taskTypes = ["wiring"];
+  ctx.game.settings.ghostTasks = false;
+  ctx.game.settings.devSkipProximity = true;
+  const { impostor, crew } = startPlaying(ctx);
+  ctx.advance(ctx.game.settings.killCooldownSec * 1000);
+  ctx.act(impostor, "kill", { targetId: crew[0].id });
+  for (const c of crew.slice(1)) {
+    for (const t of c.tasks) {
+      ctx.act(c, "checkpoint", { stationId: t.steps[0], method: "sign" });
+      ctx.act(c, "task_complete", { taskId: t.id });
+    }
+  }
+  assert.equal(ctx.game.winner, "crewmates");
+});
+
+test("any living player can start the discussion once everyone's gathered", () => {
+  const ctx = setup(4);
+  ctx.game.settings.devSkipProximity = true;
+  const { impostor, crew } = startPlaying(ctx);
+  ctx.advance(ctx.game.settings.killCooldownSec * 1000);
+  ctx.act(impostor, "kill", { targetId: crew[0].id });
+  ctx.act(crew[1], "report_body", { bodyId: crew[0].id });
+  assert.equal(ctx.game.meeting!.stage, "gathering");
+  assert.throws(() => ctx.act(crew[0], "start_discussion"), /Ghosts/);
+  ctx.act(crew[2], "start_discussion");
+  assert.equal(ctx.game.meeting!.stage, "discussion");
+  assert.throws(() => ctx.act(crew[2], "start_discussion"), /already started/);
+});
+
+test("quitting the lobby removes the player, frees the name and passes the host on", () => {
+  const ctx = setup(3, [{ name: "Sign", kind: "task" }]);
+  const [host, guest] = ctx.players;
+  ctx.act(guest, "add_station", { name: "Mine", kind: "task" });
+  ctx.act(host, "leave");
+  assert.equal(ctx.game.players.has(host.id), false);
+  assert.equal(ctx.game.hostId, guest.id);
+  ctx.act(guest, "leave");
+  assert.equal(ctx.game.stations.some((s) => s.name === "Mine"), false, "their signs go with them");
+  assert.equal(ctx.game.addPlayer(host.name).name, host.name, "the name is free again");
+});
