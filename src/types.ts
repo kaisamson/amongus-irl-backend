@@ -127,10 +127,32 @@ export interface Checkpoint {
   at: number;
 }
 
+export const PLAYER_COLORS = [
+  "red",
+  "blue",
+  "green",
+  "pink",
+  "orange",
+  "yellow",
+  "black",
+  "white",
+  "purple",
+  "brown",
+  "cyan",
+  "lime",
+  "maroon",
+  "rose",
+  "banana",
+] as const;
+
+export type PlayerColor = (typeof PLAYER_COLORS)[number];
+
 export interface Player {
   id: string;
   token: string;
   name: string;
+  /** Stable lobby suit color, assigned once by the authoritative server and persisted. */
+  color: PlayerColor;
   role: Role | null;
   alive: boolean;
   /** Whether other players have learned this player is dead (via a meeting or ejection). */

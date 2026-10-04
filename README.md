@@ -66,3 +66,5 @@ All settings live in `src/types.ts` (`DEFAULT_SETTINGS`) and are changed by the 
 | `WS /ws?code&playerId&token` | client → `{ id, action, payload }`; server → `ack`, `state` (per-player snapshot), `event` |
 
 Actions and the state machine live in `src/game.ts` (`Game.handle`, `Game.viewFor`).
+Each player receives a distinct server-assigned suit color when joining. The color is included in
+player views and stored in the live-game snapshot so reconnects and server restarts preserve it.

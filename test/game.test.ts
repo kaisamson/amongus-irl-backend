@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Game, rssiAtDistance, type Outbound } from "../src/game.ts";
-import { DEFAULT_SETTINGS, type Player, type Station } from "../src/types.ts";
+import { DEFAULT_SETTINGS, PLAYER_COLORS, type Player, type Station } from "../src/types.ts";
 
 function setup(n = 4, stations?: Partial<Station>[]) {
   let clock = 1_000_000;
@@ -50,6 +50,29 @@ test("a lobby without signs starts role reveal and can enter play", () => {
   assert.equal(ctx.game.phase, "PLAYING");
   ctx.advance(1000);
   assert.equal(ctx.game.phase, "PLAYING", "zero tasks must not immediately end the game");
+});
+
+test("players receive distinct colors that survive snapshots", () => {
+  const ctx = setup(15, []);
+  const colors = ctx.players.map((player) => player.color);
+  assert.equal(new Set(colors).size, colors.length);
+  assert.deepEqual(colors, PLAYER_COLORS);
+  assert.deepEqual(ctx.game.viewFor(ctx.host.id).players.map((player) => player.color), PLAYER_COLORS);
+
+  const restored = Game.fromSnapshot(JSON.parse(JSON.stringify(ctx.game.toSnapshot())), () => {});
+  assert.deepEqual([...restored.players.values()].map((player) => player.color), PLAYER_COLORS);
+});
+
+test("restoring a legacy snapshot assigns and persists distinct player colors", () => {
+  const ctx = setup(4, []);
+  const snapshot = JSON.parse(JSON.stringify(ctx.game.toSnapshot()));
+  for (const player of snapshot.players) delete player.color;
+
+  const restored = Game.fromSnapshot(snapshot, () => {});
+  const colors = [...restored.players.values()].map((player) => player.color);
+  assert.equal(new Set(colors).size, colors.length);
+  assert.deepEqual(colors, PLAYER_COLORS.slice(0, 4));
+  assert.deepEqual(restored.toSnapshot().players.map((player) => player.color), colors);
 });
 
 test("starting without signs still requires the minimum player count", () => {

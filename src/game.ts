@@ -7,6 +7,8 @@ import {
   type MeetingKind,
   type Phase,
   type Player,
+  PLAYER_COLORS,
+  type PlayerColor,
   type Sabotage,
   type Settings,
   type Sighting,
@@ -151,6 +153,7 @@ export class Game {
       id: randomUUID(),
       token: shortId(16),
       name: trimmed,
+      color: this.nextPlayerColor(),
       role: null,
       alive: true,
       deathKnown: false,
@@ -171,6 +174,10 @@ export class Game {
     if (!this.hostId) this.hostId = p.id;
     this.touch();
     return p;
+  }
+
+  private nextPlayerColor(used = new Set([...this.players.values()].map((player) => player.color))): PlayerColor {
+    return PLAYER_COLORS.find((color) => !used.has(color)) ?? PLAYER_COLORS[this.players.size % PLAYER_COLORS.length];
   }
 
   authenticate(playerId: string, token: string): Player | null {
@@ -907,8 +914,19 @@ export class Game {
     // Snapshots from older versions: drop settings that no longer exist, default the new ones.
     const known = Object.fromEntries(Object.entries(snap.settings).filter(([k]) => k in DEFAULT_SETTINGS));
     g.settings = { ...DEFAULT_SETTINGS, ...known };
-    // Nobody is connected until their phone reconnects with its stored token.
-    for (const p of snap.players) g.players.set(p.id, { ...p, connected: !!p.bot });
+    // Nobody is connected until their phone reconnects with its stored token. Older snapshots did
+    // not contain colors, so assign any missing/invalid/duplicate value before restoring the player.
+    const usedColors = new Set<PlayerColor>();
+    for (const p of snap.players) {
+      const savedColor = (p as Player & { color?: unknown }).color;
+      const color = typeof savedColor === "string"
+        && PLAYER_COLORS.includes(savedColor as PlayerColor)
+        && !usedColors.has(savedColor as PlayerColor)
+        ? savedColor as PlayerColor
+        : g.nextPlayerColor(usedColors);
+      usedColors.add(color);
+      g.players.set(p.id, { ...p, color, connected: !!p.bot });
+    }
     g.meeting = snap.meeting ? { ...snap.meeting, arrived: new Set(snap.meeting.arrived) } : null;
     g.phaseDeadline = snap.phaseDeadline;
     g.result = snap.result;
@@ -967,6 +985,7 @@ export class Game {
       return {
         id: pl.id,
         name: pl.name,
+        color: pl.color,
         isHost: pl.id === this.hostId,
         isBot: !!pl.bot,
         connected: pl.connected,
@@ -1051,6 +1070,7 @@ export class Game {
 export interface PlayerView {
   id: string;
   name: string;
+  color: PlayerColor;
   isHost: boolean;
   isBot: boolean;
   connected: boolean;
