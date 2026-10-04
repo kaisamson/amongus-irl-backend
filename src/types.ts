@@ -202,6 +202,8 @@ export interface Player {
 export interface Sighting {
   rssi: number;
   at: number;
+  /** The last several seconds of readings, so a single weak one doesn't drop someone out of range. */
+  recent?: { rssi: number; at: number }[];
 }
 
 export type MeetingKind = "body" | "emergency";

@@ -791,3 +791,20 @@ test("security cameras: dead players and players at the Security sign can watch;
   ctx.act(other, "cam_watch", { on: false });
   assert.equal(game.camWatchers.size, 0);
 });
+
+test("kill range is optimistic about leaving: one weak reading doesn't drop the target", () => {
+  const ctx = setup(4);
+  const { impostor, crew } = startPlaying(ctx);
+  const [target] = crew;
+  const strong = Math.ceil(rssiAtDistance(ctx.game.settings.killDistanceM, ctx.game.settings.rssiAt1m, ctx.game.settings.pathLossExponent)) + 3;
+  const report = (rssi: number) => ctx.act(target, "proximity", { sightings: [{ token: impostor.bleToken, rssi }] });
+
+  report(strong);
+  assert.deepEqual(ctx.game.viewFor(impostor.id).me.killTargets, [target.id], "in range at once");
+  ctx.advance(1000);
+  report(-95); // a body in the way for a moment
+  assert.deepEqual(ctx.game.viewFor(impostor.id).me.killTargets, [target.id], "still in range");
+  ctx.advance(ctx.game.settings.proximityFreshSec * 1000);
+  report(-95); // really walked away
+  assert.deepEqual(ctx.game.viewFor(impostor.id).me.killTargets, [], "out of range once the strong reading is old");
+});
