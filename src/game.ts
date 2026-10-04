@@ -925,6 +925,9 @@ export class Game {
       ejectedId: ejected?.id ?? null,
       ejectedWasImpostor: ejected && this.settings.revealRoleOnEject ? ejected.role === "impostor" : null,
       tie,
+      impostorsRemaining: this.settings.revealRoleOnEject
+        ? [...this.players.values()].filter((pl) => pl.alive && pl.role === "impostor").length
+        : null,
     };
     this.phase = "RESULT";
     this.phaseDeadline = this.now() + this.settings.resultSec * 1000;
