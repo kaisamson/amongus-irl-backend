@@ -19,10 +19,12 @@ import {
   type VoteResult,
   type Winner,
 } from "./types.ts";
+import { BotWalker, fusePositions, parseReport, type PlayerPosition, type PositionReport } from "./positions.ts";
 
 export type Outbound =
   | { type: "state"; state: StateView }
-  | { type: "event"; event: string; data?: unknown };
+  | { type: "event"; event: string; data?: unknown }
+  | { type: "positions"; positions: PlayerPosition[] };
 
 export type Send = (playerId: string, msg: Outbound) => void;
 
@@ -133,6 +135,11 @@ export class Game {
   players = new Map<string, Player>();
   /** observerId -> subjectId -> latest sighting */
   sightings = new Map<string, Map<string, Sighting>>();
+  /** Each phone's latest position estimate (not persisted: it's stale after a restart anyway). */
+  positionReports = new Map<string, PositionReport>();
+  private botWalker = new BotWalker();
+  private positionsSentAt = 0;
+  private lastPositionsSent = new Map<string, string>();
   meeting: Meeting | null = null;
   phaseDeadline: number | null = null;
   result: VoteResult | null = null;
@@ -215,7 +222,10 @@ export class Game {
     const p = this.players.get(playerId);
     if (!p) return;
     p.connected = connected;
-    if (connected) this.lastSent.delete(playerId); // force a full snapshot on (re)connect
+    if (connected) {
+      this.lastSent.delete(playerId); // force a full snapshot on (re)connect
+      this.lastPositionsSent.delete(playerId);
+    }
     this.broadcast();
   }
 
@@ -237,6 +247,7 @@ export class Game {
       case "start_game": result = this.startGame(p); break;
       case "ack_role": result = this.ackRole(p); break;
       case "proximity": result = this.proximity(p, payload); break;
+      case "position": result = this.reportPosition(p, payload); break;
       case "checkpoint": result = this.checkpoint(p, payload); break;
       case "task_start": result = this.taskStart(p, payload); break;
       case "task_complete": result = this.taskComplete(p, payload); break;
@@ -250,6 +261,7 @@ export class Game {
       case "restart": result = this.restart(p); break;
       default: throw new GameError(`Unknown action: ${action}`);
     }
+    if (action === "position") return result; // only feeds the positions stream, never the game state
     this.broadcast();
     if (action !== "proximity") this.hooks.onChange?.();
     return result;
@@ -265,7 +277,9 @@ export class Game {
 
   private updateSettings(p: Player, patch: Partial<Settings>) {
     this.requireHost(p);
-    this.requirePhase("LOBBY");
+    // Live positions is a testing switch the host may flip mid-game; everything else is lobby-only.
+    const keys = Object.keys(patch ?? {});
+    if (!(keys.length > 0 && keys.every((k) => k === "livePositions"))) this.requirePhase("LOBBY");
     for (const [k, v] of Object.entries(patch ?? {})) {
       if (!(k in DEFAULT_SETTINGS)) throw new GameError(`Unknown setting: ${k}`);
       if (k === "taskTypes") {
@@ -522,6 +536,52 @@ export class Game {
       if (subject && subject.id !== p.id && typeof s.rssi === "number") {
         mine.set(subject.id, { rssi: s.rssi, at: now });
       }
+    }
+  }
+
+  /** A phone's own position estimate (see positions.ts). */
+  private reportPosition(p: Player, payload: unknown) {
+    this.positionReports.set(p.id, parseReport(payload, this.now()));
+  }
+
+  /** Everyone's fused position, or [] when live positions are off. */
+  livePositions(): PlayerPosition[] {
+    if (!this.settings.livePositions || this.phase === "GAME_OVER") return [];
+    const players = [...this.players.values()];
+    const reports = new Map(this.positionReports);
+    const bots = players.filter((pl) => pl.bot);
+    for (const [id, r] of this.botWalker.positions(bots, this.stations, this.now())) reports.set(id, r);
+    return fusePositions({
+      players,
+      stations: this.stations,
+      reports,
+      sightings: this.sightings,
+      rssiAt1m: this.settings.rssiAt1m,
+      pathLossExponent: this.settings.pathLossExponent,
+      freshMs: Math.max(this.settings.proximityFreshSec, 6) * 1000,
+      now: this.now(),
+    });
+  }
+
+  /** Once a second while live positions are on: send everyone the map dots (testing: all of them). */
+  private broadcastPositions() {
+    const now = this.now();
+    if (now - this.positionsSentAt < 1000) return;
+    this.positionsSentAt = now;
+    if (!this.settings.livePositions) {
+      if (this.lastPositionsSent.size > 0) {
+        // Turned off: clear everyone's map once.
+        for (const id of this.lastPositionsSent.keys()) this.send(id, { type: "positions", positions: [] });
+        this.lastPositionsSent.clear();
+      }
+      return;
+    }
+    const positions = this.livePositions();
+    const key = JSON.stringify(positions);
+    for (const p of this.players.values()) {
+      if (p.bot || !p.connected || this.lastPositionsSent.get(p.id) === key) continue;
+      this.lastPositionsSent.set(p.id, key);
+      this.send(p.id, { type: "positions", positions });
     }
   }
 
@@ -973,6 +1033,7 @@ export class Game {
       this.advance();
     }
     this.broadcast();
+    this.broadcastPositions();
     if (this.phase + this.phaseDeadline !== before) this.hooks.onChange?.();
   }
 
