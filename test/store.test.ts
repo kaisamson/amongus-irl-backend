@@ -16,6 +16,7 @@ const stations: Station[] = [
 
 function snapshotOfStartedGame() {
   const game = new Game("ABCD", "venue", structuredClone(stations), () => {});
+  game.settings.signsPerPlayer = 0;
   for (const name of ["A", "B", "C", "D"]) game.addPlayer(name);
   game.handle(game.hostId, "start_game", {});
   return game.toSnapshot();

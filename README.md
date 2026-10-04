@@ -52,6 +52,9 @@ All settings live in `src/types.ts` (`DEFAULT_SETTINGS`) and are changed by the 
   (the app's Bluetooth tab shows the reading).
 - **Timers:** `roleRevealSec`, `gatherTimeoutSec`, `discussionSec`, `votingSec`, `resultSec`, `killCooldownSec`,
   `emergencyCooldownSec`, `sabotageCooldownSec`, `reactorSec`, `uploadSec`.
+- **Lobby signs:** every non-bot player must add `signsPerPlayer` task signs (default 3, `0` turns it off) before the
+  host can start. Those signs belong to the game; only special stations (meeting point, emergency button, reactor,
+  electrical) are saved with the venue map.
 - **Testing:** `forcedImpostorIds` (only the host sees it), `devSkipProximity`, `devSkipCheckpoint`, `minPlayers`.
 
 ## API

@@ -47,8 +47,9 @@ function register(game: Game) {
 
 function hooksFor(code: () => string, mapId: string) {
   return {
+    // Only special stations persist with the venue map; players' task signs belong to this game.
     onStationsChanged: (stations: GameSnapshot["stations"]) =>
-      store.saveStations(mapId, stations).catch(logError("Saving stations")),
+      store.saveStations(mapId, stations.filter((s) => s.kind !== "task")).catch(logError("Saving stations")),
     onChange: () => {
       const game = games.get(code());
       if (game) scheduleSave(game);
@@ -69,7 +70,8 @@ async function createGame(mapId: string): Promise<Game> {
   let code = newCode();
   // A saved game may exist in the store without being loaded into this process yet.
   while (await store.loadGame(code)) code = newCode();
-  const stations = await store.loadStations(mapId);
+  // Task signs saved on older maps belong to past games; new games start with only the special stations.
+  const stations = (await store.loadStations(mapId)).filter((s) => s.kind !== "task");
   const game = new Game(code, mapId, stations, (playerId, msg) => send(code, playerId, msg), hooksFor(() => code, mapId));
   register(game);
   return game;

@@ -30,6 +30,8 @@ export interface Station {
   signText?: string;
   /** Reference photo of the sign, served at /photos/:photoId.jpg */
   photoId?: string;
+  /** Player who photographed this sign in the lobby. Player signs belong to the game, not the saved venue map. */
+  addedBy?: string;
 }
 
 export interface Settings {
@@ -68,6 +70,8 @@ export interface Settings {
   taskTypes: TaskType[];
   /** Testing: players who will be impostor (the rest of the impostor slots are random). Only the host sees this. */
   forcedImpostorIds: string[];
+  /** Signs each (non-bot) player must add in the lobby before the game can start. 0 turns the requirement off. */
+  signsPerPlayer: number;
   uploadSec: number;
   /** Submit Scan: seconds the player must stay at the scanner. */
   scanSec: number;
@@ -102,6 +106,7 @@ export const DEFAULT_SETTINGS: Settings = {
   ghostTasks: true,
   taskTypes: ["wiring", "upload", "sequence", "delivery", "swipe", "shields", "o2", "scan", "divert"],
   forcedImpostorIds: [],
+  signsPerPlayer: 3,
   uploadSec: 8,
   scanSec: 10,
   sabotageCooldownSec: 45,
