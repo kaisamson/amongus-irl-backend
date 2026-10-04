@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
+import { CampusCache } from "./campus.ts";
 import { buildStation, Game, type GameSnapshot, type Outbound } from "./game.ts";
 import { FileStore, RedisStore, type Store } from "./store.ts";
 import { GameError, type Gameset, type Station } from "./types.ts";
@@ -134,12 +135,34 @@ function json(res: ServerResponse, status: number, body: unknown) {
   res.end(JSON.stringify(body));
 }
 
+const campus = new CampusCache();
+// Warm it up so the first phone doesn't wait for SFU.
+campus.get().catch(() => {});
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost");
   const parts = url.pathname.split("/").filter(Boolean);
   try {
     if (req.method === "GET" && url.pathname === "/health") {
       return json(res, 200, { ok: true, games: games.size, store: store.kind });
+    }
+    // GET /campus -> SFU Burnaby floor plans { version, buildings: [{ id, name, bbox, floors: [{ id, name, order, rooms }] }] }
+    if (req.method === "GET" && url.pathname === "/campus") {
+      const bundle = await campus.get().catch(() => null);
+      if (!bundle) return json(res, 503, { error: "Campus map unavailable, try again shortly" });
+      const etag = `"${bundle.version}"`;
+      if (req.headers["if-none-match"] === etag) {
+        res.writeHead(304, { etag });
+        return res.end();
+      }
+      const gzip = /\bgzip\b/.test(String(req.headers["accept-encoding"] ?? ""));
+      res.writeHead(200, {
+        "content-type": "application/json",
+        etag,
+        "cache-control": "public, max-age=3600",
+        ...(gzip ? { "content-encoding": "gzip" } : {}),
+      });
+      return res.end(gzip ? bundle.gzip : bundle.json);
     }
     // POST /games { name, mapId? } -> creates lobby, caller becomes host
     if (req.method === "POST" && parts.length === 1 && parts[0] === "games") {

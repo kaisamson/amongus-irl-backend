@@ -71,6 +71,14 @@ All settings live in `src/types.ts` (`DEFAULT_SETTINGS`) and can be changed by a
   BLE, treats a fresh sign check-in as an exact fix, grows the radius while a phone is quiet, and sends everyone
   `{ type: "positions", positions }` once a second. Bots wander between GPS-tagged signs so the map isn't empty.
 
+## Campus map
+
+`GET /campus` serves every SFU Burnaby building's floor plans, so the game can be played anywhere on campus. The server
+fetches SFU's public RoomFinder ArcGIS layer (`RoomFinder2024_RoomSearch`) once, groups the ~7,400 rooms by building and
+floor (bottom to top), rounds coordinates to ~10 cm and keeps it in memory (~2.3 MB, ~380 KB gzipped), refreshing weekly
+and keeping the old copy if SFU is unreachable. Signs and position reports carry `buildingId` / `floorId` from it.
+Room data belongs to Simon Fraser University.
+
 ## API
 
 | | |
@@ -80,6 +88,7 @@ All settings live in `src/types.ts` (`DEFAULT_SETTINGS`) and can be changed by a
 | `POST /games/:code/join` `{ name }` | → `{ code, playerId, token }` |
 | `POST /photos` `{ jpegBase64 }` | sign reference photo → `{ photoId }` |
 | `GET /photos/:id.jpg` | photo bytes |
+| `GET /campus` | SFU Burnaby floor plans (all buildings and floors), gzip + ETag; fetched from SFU's RoomFinder map service and cached for a week |
 | `GET /gamesets` | saved games `[{ id, name, signs, updatedAt }]`, newest first |
 | `GET /gamesets/:id` | a saved game with its signs |
 | `POST /gamesets/check` `{ password }` | checks the gameset password |
