@@ -47,8 +47,9 @@ function register(game: Game) {
 
 function hooksFor(code: () => string, mapId: string) {
   return {
+    // Only special stations persist with the venue map; players' task signs belong to this game.
     onStationsChanged: (stations: GameSnapshot["stations"]) =>
-      store.saveStations(mapId, stations).catch(logError("Saving stations")),
+      store.saveStations(mapId, stations.filter((s) => s.kind !== "task")).catch(logError("Saving stations")),
     onChange: () => {
       const game = games.get(code());
       if (game) scheduleSave(game);
@@ -69,7 +70,8 @@ async function createGame(mapId: string): Promise<Game> {
   let code = newCode();
   // A saved game may exist in the store without being loaded into this process yet.
   while (await store.loadGame(code)) code = newCode();
-  const stations = await store.loadStations(mapId);
+  // Task signs saved on older maps belong to past games; new games start with only the special stations.
+  const stations = (await store.loadStations(mapId)).filter((s) => s.kind !== "task");
   const game = new Game(code, mapId, stations, (playerId, msg) => send(code, playerId, msg), hooksFor(() => code, mapId));
   register(game);
   return game;
@@ -149,6 +151,32 @@ const server = createServer(async (req, res) => {
       game.broadcast();
       scheduleSave(game);
       return json(res, 200, { code: game.code, playerId: p.id, token: p.token });
+    }
+    // GET /sign-sets -> [{ name, signs, savedAt }]   (saved demo sign sets, newest first)
+    if (req.method === "GET" && url.pathname === "/sign-sets") {
+      return json(res, 200, await store.listSignSets());
+    }
+    // POST /games/:code/sign-sets/save { playerId, token, name } -> { signs }   (host saves the lobby's signs)
+    // POST /games/:code/sign-sets/load { playerId, token, name } -> { signs }   (host loads a saved set)
+    if (req.method === "POST" && parts.length === 4 && parts[0] === "games" && parts[2] === "sign-sets"
+        && (parts[3] === "save" || parts[3] === "load")) {
+      const game = await getGame(parts[1].toUpperCase());
+      if (!game) return json(res, 404, { error: "No game with that code" });
+      const body = await readJson(req);
+      const player = game.authenticate(String(body.playerId ?? ""), String(body.token ?? ""));
+      if (!player) return json(res, 403, { error: "Not in this game" });
+      if (player.id !== game.hostId) return json(res, 403, { error: "Only the host can do that" });
+      const name = String(body.name ?? "").trim().slice(0, 40);
+      if (!name) return json(res, 400, { error: "Name the sign set" });
+      if (parts[3] === "save") {
+        const signs = game.stations.filter((s) => s.kind === "task");
+        if (signs.length === 0) return json(res, 400, { error: "Add some signs first" });
+        await store.saveSignSet(name, game.stations);
+        return json(res, 200, { signs: signs.length });
+      }
+      const stations = await store.loadSignSet(name);
+      if (!stations) return json(res, 404, { error: "No sign set with that name" });
+      return json(res, 200, { signs: game.applySignSet(player.id, stations) });
     }
     // POST /photos { jpegBase64 } -> { photoId }   (sign reference photos for stations)
     if (req.method === "POST" && url.pathname === "/photos") {

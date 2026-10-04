@@ -16,6 +16,7 @@ const stations: Station[] = [
 
 function snapshotOfStartedGame() {
   const game = new Game("ABCD", "venue", structuredClone(stations), () => {});
+  game.settings.signsPerPlayer = 0;
   for (const name of ["A", "B", "C", "D"]) game.addPlayer(name);
   game.handle(game.hostId, "start_game", {});
   return game.toSnapshot();
@@ -62,6 +63,18 @@ for (const [kind, make] of stores) {
     assert.deepEqual(loaded, JSON.parse(JSON.stringify(snap)));
     await store.deleteGame("ABCD");
     assert.equal(await store.loadGame("ABCD"), null);
+  });
+
+  test(`${kind}: sign sets save, list newest first, and load`, async () => {
+    const store = make();
+    await store.init();
+    assert.equal(await store.loadSignSet("Judging"), null);
+    await store.saveSignSet("Old", stations);
+    await new Promise((r) => setTimeout(r, 5));
+    await store.saveSignSet("Judging", stations);
+    const list = await store.listSignSets();
+    assert.deepEqual(list.map((s) => [s.name, s.signs]), [["Judging", 1], ["Old", 1]]);
+    assert.deepEqual(await store.loadSignSet("Judging"), stations);
   });
 
   test(`${kind}: game history records`, async () => {

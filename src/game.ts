@@ -258,6 +258,9 @@ export class Game {
       if (typeof v !== expected) throw new GameError(`Setting ${k} must be ${expected}`);
       if (typeof v === "number" && !Number.isFinite(v)) throw new GameError(`Setting ${k} must be a number`);
       if (typeof v === "number" && v < 0 && k !== "rssiAt1m") throw new GameError(`Setting ${k} can't be negative`);
+      if (k === "signsPerPlayer" && (!Number.isInteger(v) || (v as number) > 10)) {
+        throw new GameError("Signs per player must be a whole number from 0 to 10");
+      }
       if ((k === "killDistanceM" || k === "reportDistanceM" || k === "pathLossExponent") && (v as number) <= 0) {
         throw new GameError(`Setting ${k} must be greater than 0`);
       }
@@ -265,10 +268,14 @@ export class Game {
     }
   }
 
+  /**
+   * Any player adds task signs (their required signs); special stations (meeting point, emergency button,
+   * reactor, electrical) are host-only and saved with the venue map.
+   */
   private addStation(p: Player, s: Partial<Station>) {
-    this.requireHost(p);
     this.requirePhase("LOBBY");
     if (!s?.name || !s.kind) throw new GameError("Station needs a name and kind");
+    if (s.kind !== "task") this.requireHost(p);
     const station: Station = {
       id: shortId(4),
       name: String(s.name).slice(0, 40),
@@ -278,6 +285,7 @@ export class Game {
       radiusM: typeof s.radiusM === "number" ? s.radiusM : 15,
       signText: s.signText?.trim() || undefined,
       photoId: s.photoId,
+      addedBy: s.kind === "task" ? p.id : undefined,
     };
     this.stations.push(station);
     this.hooks.onStationsChanged?.(this.stations);
@@ -285,10 +293,39 @@ export class Game {
   }
 
   private deleteStation(p: Player, { stationId }: { stationId: string }) {
-    this.requireHost(p);
     this.requirePhase("LOBBY");
+    const station = this.stations.find((s) => s.id === stationId);
+    if (station?.addedBy !== p.id) this.requireHost(p); // players may remove their own signs
     this.stations = this.stations.filter((s) => s.id !== stationId);
     this.hooks.onStationsChanged?.(this.stations);
+  }
+
+  /**
+   * Host-only demo setup: replace the lobby's signs with a saved sign set. Those signs belong to nobody,
+   * so the per-player sign requirement is turned off (the host can turn it back on).
+   */
+  applySignSet(playerId: string, stations: Station[]) {
+    const p = this.players.get(playerId);
+    if (!p) throw new GameError("Unknown player");
+    this.requireHost(p);
+    this.requirePhase("LOBBY");
+    if (stations.length === 0) throw new GameError("That sign set is empty");
+    this.stations = stations.map(({ addedBy: _owner, ...station }) => station);
+    this.settings.signsPerPlayer = 0;
+    this.touch();
+    this.hooks.onStationsChanged?.(this.stations);
+    this.hooks.onChange?.();
+    this.broadcast();
+    return this.stations.filter((s) => s.kind === "task").length;
+  }
+
+  /** Non-bot players who haven't added `signsPerPlayer` signs yet. */
+  playersMissingSigns(): Player[] {
+    const need = this.settings.signsPerPlayer;
+    if (need <= 0) return [];
+    return [...this.players.values()].filter(
+      (pl) => !pl.bot && this.stations.filter((st) => st.kind === "task" && st.addedBy === pl.id).length < need,
+    );
   }
 
   /** Host-only testing aid: a server-run player so a lobby can reach the minimum with fewer phones. */
@@ -343,6 +380,7 @@ export class Game {
     if (playerId === p.id) throw new GameError("Can't kick yourself");
     this.players.delete(playerId);
     this.settings.forcedImpostorIds = this.settings.forcedImpostorIds.filter((id) => id !== playerId);
+    this.stations = this.stations.filter((st) => st.addedBy !== playerId);
     this.send(playerId, { type: "event", event: "KICKED" });
   }
 
@@ -355,6 +393,10 @@ export class Game {
     const isTwoPlayerGame = players.length === 2 && s.impostors === 1;
     if (s.impostors < 1 || (!isTwoPlayerGame && s.impostors * 2 >= players.length)) {
       throw new GameError("Too many impostors for this many players");
+    }
+    const missing = this.playersMissingSigns();
+    if (missing.length > 0) {
+      throw new GameError(`Waiting for ${missing.map((pl) => pl.name).join(", ")} to add ${s.signsPerPlayer} signs`);
     }
     const taskStations = this.stations.filter((st) => st.kind === "task");
 

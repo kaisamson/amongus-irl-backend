@@ -9,6 +9,7 @@ function setup(n = 4, stations?: Partial<Station>[]) {
   const game = new Game("TEST", "test", [], (id, msg) => {
     inbox.set(id, [...(inbox.get(id) ?? []), msg]);
   }, {}, () => clock);
+  game.settings.signsPerPlayer = 0; // these tests aren't about lobby sign setup (see the signs tests below)
   const players: Player[] = [];
   for (let i = 0; i < n; i++) players.push(game.addPlayer(`P${i}`));
   const host = players[0];
@@ -432,6 +433,7 @@ test("hooks: onChange fires for actions but not BLE reports; onGameOver gets a s
   let summary: any = null;
   let clock = 1_000_000;
   const game = new Game("HOOK", "m", [], () => {}, { onChange: () => changes++, onGameOver: (s) => (summary = s) }, () => clock);
+  game.settings.signsPerPlayer = 0;
   const players = ["A", "B", "C", "D"].map((n) => game.addPlayer(n));
   game.handle(players[0].id, "add_station", { name: "T", kind: "task" });
   game.handle(players[0].id, "update_settings", { devSkipProximity: true, killCooldownSec: 0 });
@@ -529,6 +531,7 @@ test("restoring an old snapshot drops removed settings and defaults new ones", (
 test("host-added bots fill a lobby and keep the game moving", () => {
   let clock = 1_000_000;
   const game = new Game("BOTS", "m", [], () => {}, {}, () => clock);
+  game.settings.signsPerPlayer = 0;
   const host = game.addPlayer("Host");
   const friend = game.addPlayer("Friend");
   game.handle(host.id, "add_station", { name: "Sign", kind: "task" });
@@ -565,4 +568,70 @@ test("host-added bots fill a lobby and keep the game moving", () => {
   game.tick(); // bots vote skip -> tally
   assert.equal(game.phase, "RESULT");
   assert.equal(game.result!.tallies.find((t) => t.targetId === null)!.count, 2);
+});
+
+test("every player must add their signs before the host can start", () => {
+  const game = new Game("SIGN", "m", [], () => {}, {});
+  const host = game.addPlayer("Host");
+  const guest = game.addPlayer("Guest");
+  game.handle(host.id, "add_bot", {});
+  assert.equal(game.settings.signsPerPlayer, 3);
+  const addSign = (p: Player, n: number) => {
+    for (let i = 0; i < n; i++) game.handle(p.id, "add_station", { name: `${p.name} sign ${i}`, kind: "task" });
+  };
+
+  // Players add task signs; special stations stay host-only.
+  addSign(guest, 3);
+  assert.throws(() => game.handle(guest.id, "add_station", { name: "Cafe", kind: "meeting" }), /Only the host/);
+  assert.ok(game.stations.every((s) => s.addedBy === guest.id));
+  addSign(host, 2);
+  assert.throws(() => game.handle(host.id, "start_game", {}), /Waiting for Host to add 3 signs/);
+  addSign(host, 1);
+
+  // A player can delete their own sign, not someone else's; the host can delete any.
+  const guestSign = game.stations.find((s) => s.addedBy === guest.id)!;
+  const hostSign = game.stations.find((s) => s.addedBy === host.id)!;
+  assert.throws(() => game.handle(guest.id, "delete_station", { stationId: hostSign.id }), /Only the host/);
+  game.handle(guest.id, "delete_station", { stationId: guestSign.id });
+  assert.throws(() => game.handle(host.id, "start_game", {}), /Waiting for Guest/);
+  addSign(guest, 1);
+
+  game.handle(host.id, "start_game", {}); // the bot needs no signs
+  assert.equal(game.phase, "ROLE_REVEAL");
+});
+
+test("signs per player is validated, 0 turns the requirement off, kicked players take their signs", () => {
+  const game = new Game("SIG0", "m", [], () => {}, {});
+  const host = game.addPlayer("Host");
+  const guest = game.addPlayer("Guest");
+  assert.throws(() => game.handle(host.id, "update_settings", { signsPerPlayer: 2.5 }), /whole number/);
+  assert.throws(() => game.handle(host.id, "update_settings", { signsPerPlayer: 11 }), /whole number/);
+  game.handle(guest.id, "add_station", { name: "Guest sign", kind: "task" });
+  game.handle(host.id, "kick", { playerId: guest.id });
+  assert.equal(game.stations.length, 0);
+  game.handle(host.id, "update_settings", { signsPerPlayer: 0 });
+  game.addPlayer("Other");
+  game.handle(host.id, "start_game", {});
+  assert.equal(game.phase, "ROLE_REVEAL");
+});
+
+test("host can load a saved sign set into the lobby, which turns the sign requirement off", () => {
+  let changes = 0;
+  const game = new Game("SETS", "m", [], () => {}, { onChange: () => changes++ });
+  const host = game.addPlayer("Host");
+  const guest = game.addPlayer("Guest");
+  const set: Station[] = [
+    { id: "a", name: "2005", kind: "task", radiusM: 15, photoId: "p1", addedBy: "someone-else" },
+    { id: "b", name: "Sign 2", kind: "task", radiusM: 15, photoId: "p2" },
+    { id: "c", name: "Cafe", kind: "meeting", radiusM: 15 },
+  ];
+  assert.throws(() => game.applySignSet(guest.id, set), /Only the host/);
+  assert.equal(game.applySignSet(host.id, set), 2);
+  assert.equal(game.stations.length, 3);
+  assert.ok(game.stations.every((s) => s.addedBy === undefined), "loaded signs belong to nobody");
+  assert.equal(game.settings.signsPerPlayer, 0);
+  assert.ok(changes > 0, "snapshotted");
+  game.handle(host.id, "start_game", {});
+  assert.equal(game.phase, "ROLE_REVEAL");
+  assert.throws(() => game.applySignSet(host.id, set), /Not allowed/);
 });
