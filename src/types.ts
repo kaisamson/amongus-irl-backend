@@ -220,6 +220,9 @@ export interface VoteResult {
   ejectedId: string | null;
   ejectedWasImpostor: boolean | null;
   tie: boolean;
+  /** Impostors still in the game after this vote, shown on the ejection screen ("1 Impostor remains.").
+   *  Only when roles are revealed on ejection; optional for results saved by older servers. */
+  impostorsRemaining?: number | null;
 }
 
 export type Sabotage =

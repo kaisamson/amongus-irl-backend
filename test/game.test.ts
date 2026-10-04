@@ -190,6 +190,7 @@ test("full loop: kill -> report -> gather -> discuss -> vote -> crewmates win", 
   assert.equal(game.phase, "RESULT");
   assert.equal(game.result!.ejectedId, impostor.id);
   assert.equal(game.result!.ejectedWasImpostor, true);
+  assert.equal(game.result!.impostorsRemaining, 0, "shown as '0 Impostors remain.'");
 
   advance(game.settings.resultSec * 1000);
   assert.equal(game.phase, "GAME_OVER");
