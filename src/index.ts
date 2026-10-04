@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { readFile } from "node:fs/promises";
 import { networkInterfaces } from "node:os";
 import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
@@ -135,7 +136,8 @@ function json(res: ServerResponse, status: number, body: unknown) {
   res.end(JSON.stringify(body));
 }
 
-const campus = new CampusCache();
+const CAMPUS_SNAPSHOT = join(dirname(fileURLToPath(import.meta.url)), "..", "snapshot", "campus.json.gz");
+const campus = new CampusCache(undefined, undefined, () => readFile(CAMPUS_SNAPSHOT).catch(() => null));
 // Warm it up so the first phone doesn't wait for SFU.
 campus.get().catch(() => {});
 
@@ -149,7 +151,7 @@ const server = createServer(async (req, res) => {
     // GET /campus -> SFU Burnaby floor plans { version, buildings: [{ id, name, bbox, floors: [{ id, name, order, rooms }] }] }
     if (req.method === "GET" && url.pathname === "/campus") {
       const bundle = await campus.get().catch(() => null);
-      if (!bundle) return json(res, 503, { error: "Campus map unavailable, try again shortly" });
+      if (!bundle) return json(res, 503, { error: "Campus map unavailable, try again shortly", cause: campus.lastError });
       const etag = `"${bundle.version}"`;
       if (req.headers["if-none-match"] === etag) {
         res.writeHead(304, { etag });

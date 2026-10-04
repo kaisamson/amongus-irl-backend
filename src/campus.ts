@@ -1,4 +1,4 @@
-import { gzipSync } from "node:zlib";
+import { gunzipSync, gzipSync } from "node:zlib";
 
 /**
  * The SFU Burnaby campus floor plans, from SFU's public RoomFinder map service (the same ArcGIS layer
@@ -152,12 +152,23 @@ async function fetchAllRooms(): Promise<Feature[]> {
   }
 }
 
-/** The campus bundle, fetched on first use and refreshed weekly. A failed refresh keeps the old copy. */
+/**
+ * The campus bundle, fetched on first use and refreshed weekly. A failed refresh keeps the old copy, and
+ * if SFU can't be reached at all (it may not answer hosting providers outside Canada) the snapshot
+ * committed with the server is served instead, retrying SFU hourly.
+ */
 export class CampusCache {
   private bundle: { json: string; gzip: Buffer; version: string; at: number } | null = null;
   private loading: Promise<void> | null = null;
+  /** Why the last fetch from SFU failed, for the error response and logs. */
+  lastError: string | null = null;
 
-  constructor(private fetchRooms: () => Promise<Feature[]> = fetchAllRooms, private now: () => number = Date.now) {}
+  constructor(
+    private fetchRooms: () => Promise<Feature[]> = fetchAllRooms,
+    private now: () => number = Date.now,
+    /** The gzipped bundle saved with the server (see scripts/update-campus-snapshot.ts). */
+    private snapshot: () => Promise<Buffer | null> = async () => null,
+  ) {}
 
   async get() {
     if (!this.bundle || this.now() - this.bundle.at > REFRESH_MS) {
@@ -174,9 +185,30 @@ export class CampusCache {
       const bundle = buildCampusBundle(await this.fetchRooms(), this.now());
       const json = JSON.stringify(bundle);
       this.bundle = { json, gzip: gzipSync(json), version: bundle.version, at: this.now() };
+      this.lastError = null;
       console.log(`Campus map: ${bundle.buildings.length} buildings, ${Math.round(json.length / 1024)} KB`);
     } catch (err) {
-      console.error("Campus map fetch failed:", (err as Error).message);
+      const cause = (err as Error & { cause?: Error }).cause;
+      this.lastError = [(err as Error).message, cause?.message].filter(Boolean).join(": ");
+      console.error("Campus map fetch from SFU failed:", this.lastError);
+      if (this.bundle) return;
+      try {
+        const gzip = await this.snapshot();
+        if (!gzip) return;
+        const json = gunzipSync(gzip).toString();
+        const { version } = JSON.parse(json) as CampusBundle;
+        // Try SFU again in an hour.
+        this.bundle = { json, gzip, version, at: this.now() - REFRESH_MS + 3600_000 };
+        console.log("Campus map: serving the saved snapshot");
+      } catch (snapErr) {
+        console.error("Campus map snapshot unreadable:", (snapErr as Error).message);
+      }
     }
+  }
+
+  /** Fetches from SFU and returns the gzipped bundle, for saving as the snapshot. */
+  async fetchFresh(): Promise<Buffer> {
+    const bundle = buildCampusBundle(await this.fetchRooms(), this.now());
+    return gzipSync(JSON.stringify(bundle));
   }
 }

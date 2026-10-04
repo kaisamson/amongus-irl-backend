@@ -76,7 +76,9 @@ All settings live in `src/types.ts` (`DEFAULT_SETTINGS`) and can be changed by a
 `GET /campus` serves every SFU Burnaby building's floor plans, so the game can be played anywhere on campus. The server
 fetches SFU's public RoomFinder ArcGIS layer (`RoomFinder2024_RoomSearch`) once, groups the ~7,400 rooms by building and
 floor (bottom to top), rounds coordinates to ~10 cm and keeps it in memory (~2.3 MB, ~380 KB gzipped), refreshing weekly
-and keeping the old copy if SFU is unreachable. Signs and position reports carry `buildingId` / `floorId` from it.
+and keeping the old copy if SFU is unreachable. SFU's map server may not answer hosting providers outside Canada, so
+a snapshot is saved with the server (`snapshot/campus.json.gz`) and served whenever SFU can't be reached (the 503
+response includes the reason). Refresh it from a Canadian network with `npm run campus:snapshot` and commit it. Signs and position reports carry `buildingId` / `floorId` from it.
 Room data belongs to Simon Fraser University.
 
 ## API
