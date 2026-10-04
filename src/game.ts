@@ -10,6 +10,7 @@ import {
   PLAYER_COLORS,
   type PlayerColor,
   type Sabotage,
+  type SabotageSigns,
   type Settings,
   type Sighting,
   type Station,
@@ -25,7 +26,16 @@ export type Outbound =
   | { type: "state"; state: StateView }
   | { type: "event"; event: string; data?: unknown }
   | { type: "positions"; positions: PlayerPosition[] }
-  | { type: "cam"; playerId: string; jpeg: string; at: number };
+  | { type: "cam"; playerId: string; jpeg: string; at: number }
+  /** Admin: where everyone is (no names), for the room counts. Only while that player has Admin open. */
+  | { type: "admin"; people: AdminPerson[] };
+
+export interface AdminPerson {
+  lat: number;
+  lng: number;
+  buildingId: string | null;
+  floorId: string | null;
+}
 
 export type Send = (playerId: string, msg: Outbound) => void;
 
@@ -62,6 +72,8 @@ export interface GameSnapshot {
   result: VoteResult | null;
   sabotage: Sabotage | null;
   sabotageAvailableAt: number;
+  /** Optional: snapshots from before automatic sabotage signs don't have it. */
+  sabotageSigns?: SabotageSigns | null;
   emergencyAvailableAt: number;
   winner: Winner | null;
   winReason: string | null;
@@ -74,9 +86,9 @@ export interface GameSnapshot {
 }
 
 const MAX_PLAYERS = 15;
-const STATION_KINDS = ["task", "meeting", "emergency", "reactor", "electrical", "security", "admin"];
+const STATION_KINDS = ["task", "meeting", "emergency", "reactor", "oxygen", "electrical", "security", "admin"];
 /** How many of each special sign a map can have; adding another replaces the oldest. */
-const SPECIAL_LIMIT: Record<string, number> = { meeting: 1, emergency: 1, reactor: 2, electrical: 1, security: 1, admin: 1 };
+const SPECIAL_LIMIT: Record<string, number> = { meeting: 1, emergency: 1, reactor: 2, oxygen: 2, electrical: 1, security: 1, admin: 1 };
 
 /** Validates and normalizes a sign/station sent by a phone (lobby or gameset editor). */
 export function buildStation(s: Partial<Station>, extra: Partial<Station> = {}): Station {
@@ -108,6 +120,32 @@ export function placeStation(station: Station, s: { lat?: unknown; lng?: unknown
   }
   const id = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim().slice(0, 12) : undefined);
   return { ...station, lat, lng, buildingId: id(s.buildingId), floorId: id(s.floorId) };
+}
+
+/**
+ * "Use any signs for sabotage": two reactor and two O2 signs from the game's signs, as far apart as possible
+ * (each pair needs people in two places). Signs without a location only fill in when nothing else is left.
+ */
+export function pickSabotageSigns(stations: Station[]): SabotageSigns | null {
+  const candidates = shuffle(stations.filter((s) => s.kind === "task"));
+  if (candidates.length < 2) return null;
+  const located = candidates.filter((s) => s.lat !== undefined && s.lng !== undefined);
+  const meters = (a: Station, b: Station) => {
+    const dy = (a.lat! - b.lat!) * 111_320;
+    const dx = (a.lng! - b.lng!) * 111_320 * Math.cos((a.lat! * Math.PI) / 180);
+    return Math.hypot(dx, dy);
+  };
+  // Farthest-point order: each next sign is the one farthest from those already picked.
+  const order: Station[] = located.length > 0 ? [located[0]] : [];
+  while (order.length < Math.min(4, located.length)) {
+    const rest = located.filter((s) => !order.includes(s));
+    rest.sort((a, b) => Math.min(...order.map((o) => meters(b, o))) - Math.min(...order.map((o) => meters(a, o))));
+    order.push(rest[0]);
+  }
+  for (const s of candidates) if (order.length < 4 && !order.includes(s)) order.push(s);
+  // Fewer than four signs: the O2 pair reuses reactor signs, still two different ones.
+  const [a, b, c, d] = order.map((s) => s.id);
+  return { reactor: [a, b], oxygen: d ? [c, d] : c ? [c, a] : [a, b] };
 }
 
 function shortId(bytes = 4): string {
@@ -158,6 +196,9 @@ export class Game {
   positionReports = new Map<string, PositionReport>();
   /** Security cameras: who is watching, and each phone's latest front-camera frame (JPEG, base64). Not persisted. */
   camWatchers = new Set<string>();
+  /** Admin map: who has it open (gets everyone's whereabouts, no names). Not persisted. */
+  adminWatchers = new Set<string>();
+  private lastAdminSent = new Map<string, string>();
   private camFrames = new Map<string, { jpeg: string; at: number }>();
   private botWalker = new BotWalker();
   private positionsSentAt = 0;
@@ -167,6 +208,8 @@ export class Game {
   result: VoteResult | null = null;
   sabotage: Sabotage | null = null;
   sabotageAvailableAt = 0;
+  /** "Use any signs for sabotage": the reactor and O2 signs picked at game start. */
+  sabotageSigns: SabotageSigns | null = null;
   emergencyAvailableAt = 0;
   winner: Winner | null = null;
   winReason: string | null = null;
@@ -278,6 +321,7 @@ export class Game {
       case "proximity": result = this.proximity(p, payload); break;
       case "position": result = this.reportPosition(p, payload); break;
       case "cam_watch": result = this.camWatch(p, payload); break;
+      case "admin_watch": result = this.adminWatch(p, payload); break;
       case "cam_frame": result = this.camFrame(p, payload); break;
       case "checkpoint": result = this.checkpoint(p, payload); break;
       case "task_start": result = this.taskStart(p, payload); break;
@@ -558,8 +602,9 @@ export class Game {
       pl.lastCheckpoint = null;
       pl.emergencyUsed = 0;
       pl.vote = undefined;
-      pl.tasks = this.assignTasks(taskStations, pl.role === "impostor");
     }
+    this.assignAllTasks([...this.players.values()], taskStations);
+    this.sabotageSigns = this.settings.autoSabotageSigns ? pickSabotageSigns(this.stations) : null;
     this.sightings.clear();
     this.meeting = null;
     this.result = null;
@@ -575,19 +620,42 @@ export class Game {
   }
 
   /**
-   * Signs are just places. Each player gets `tasksPerPlayer` different signs, and each of those gets a
-   * random mini-game from the host's rotation. Delivery and Divert Power also need a second sign to finish at.
+   * Signs are just places, and each one gets a single random mini-game from the host's rotation for the whole
+   * game, so everyone sent to a sign does the same task there (Delivery and Divert Power also get a second
+   * sign to finish at). Each player gets `tasksPerPlayer` different signs: the least-used signs first, so the
+   * signs are shared evenly, and a set nobody else has where there's a choice, so players head different ways.
+   * Impostors get fake tasks, which don't take a share.
    */
-  private assignTasks(taskStations: Station[], fake: boolean): Task[] {
-    const picks = shuffle(taskStations).slice(0, this.settings.tasksPerPlayer);
-    return picks.map((st) => {
+  private assignAllTasks(players: Player[], taskStations: Station[]) {
+    const games = new Map<string, { type: TaskType; steps: string[] }>();
+    for (const st of taskStations) {
       const others = taskStations.filter((o) => o.id !== st.id);
       let types = this.settings.taskTypes.filter((t) => !TWO_STEP_TYPES.includes(t) || others.length > 0);
       if (types.length === 0) types = ["wiring"];
       const type = types[Math.floor(Math.random() * types.length)];
-      const steps = TWO_STEP_TYPES.includes(type) ? [st.id, shuffle(others)[0].id] : [st.id];
-      return { id: shortId(4), type, steps, step: 0, completed: false, fake, startedAt: null };
-    });
+      games.set(st.id, { type, steps: TWO_STEP_TYPES.includes(type) ? [st.id, shuffle(others)[0].id] : [st.id] });
+    }
+    const uses = new Map(taskStations.map((st) => [st.id, 0]));
+    const sets = new Set<string>();
+    const count = Math.min(this.settings.tasksPerPlayer, taskStations.length);
+    for (const pl of shuffle(players)) {
+      const fake = pl.role === "impostor";
+      let picks: Station[] = [];
+      for (let attempt = 0; attempt < 6; attempt++) {
+        // Fewest uses first; ties in a random order (a fresh one each attempt).
+        const order = new Map(taskStations.map((st) => [st.id, Math.random()]));
+        picks = [...taskStations]
+          .sort((a, b) => uses.get(a.id)! - uses.get(b.id)! || order.get(a.id)! - order.get(b.id)!)
+          .slice(0, count);
+        if (!sets.has(picks.map((st) => st.id).sort().join())) break;
+      }
+      sets.add(picks.map((st) => st.id).sort().join());
+      if (!fake) for (const st of picks) uses.set(st.id, uses.get(st.id)! + 1);
+      pl.tasks = picks.map((st) => {
+        const game = games.get(st.id)!;
+        return { id: shortId(4), type: game.type, steps: [...game.steps], step: 0, completed: false, fake, startedAt: null };
+      });
+    }
   }
 
   private get killRssi() {
@@ -667,6 +735,62 @@ export class Game {
     }
   }
 
+  // ------------------------------------------------------------ admin
+
+  /** The living, right after scanning the Admin sign (like Security). */
+  canViewAdmin(p: Player): boolean {
+    if (this.phase !== "PLAYING" || !p.alive) return false;
+    const cp = p.lastCheckpoint;
+    const station = cp && this.stations.find((s) => s.id === cp.stationId);
+    return !!cp && station?.kind === "admin" && this.now() - cp.at <= this.settings.checkpointTtlSec * 1000;
+  }
+
+  private adminWatch(p: Player, { on }: { on?: boolean }) {
+    if (!on) {
+      this.adminWatchers.delete(p.id);
+      this.lastAdminSent.delete(p.id);
+      return;
+    }
+    if (!this.canViewAdmin(p)) throw new GameError("Scan the Admin sign to see the map");
+    this.adminWatchers.add(p.id);
+    this.lastAdminSent.delete(p.id);
+  }
+
+  /**
+   * Where everyone in the game is, with no names: the living and bodies nobody has found (as Among Us's
+   * admin counts them), from each phone's position. The phone counts them per room on its floor plans.
+   */
+  adminPeople(): AdminPerson[] {
+    const now = this.now();
+    const people: AdminPerson[] = [];
+    for (const p of this.currentPositions()) {
+      const pl = this.players.get(p.playerId);
+      if (!pl || p.stale || now - p.at > 15_000) continue;
+      if (!pl.alive && !(pl.body && !pl.body.reported)) continue;
+      people.push({ lat: p.lat, lng: p.lng, buildingId: p.buildingId, floorId: p.floorId });
+    }
+    return shuffle(people);
+  }
+
+  /** Once a second: send the admin map to whoever has it open (only when it changed). */
+  private broadcastAdmin() {
+    for (const id of this.adminWatchers) {
+      const p = this.players.get(id);
+      if (!p || !this.canViewAdmin(p)) {
+        this.adminWatchers.delete(id);
+        this.lastAdminSent.delete(id);
+      }
+    }
+    if (this.adminWatchers.size === 0) return;
+    const people = this.adminPeople();
+    const key = JSON.stringify(people.map((x) => [x.lat.toFixed(5), x.lng.toFixed(5), x.floorId]).sort());
+    for (const id of this.adminWatchers) {
+      if (this.lastAdminSent.get(id) === key) continue;
+      this.lastAdminSent.set(id, key);
+      this.send(id, { type: "admin", people });
+    }
+  }
+
   /** A phone's front-camera frame: relayed to whoever is watching (about 4 a second at most). */
   private camFrame(p: Player, { jpeg }: { jpeg?: unknown }) {
     if (this.phase !== "PLAYING") return;
@@ -695,6 +819,11 @@ export class Game {
   /** Everyone's fused position, or [] when live positions are off. */
   livePositions(): PlayerPosition[] {
     if (!this.settings.livePositions || this.phase === "GAME_OVER") return [];
+    return this.currentPositions();
+  }
+
+  /** Everyone's fused position (phones, bots, sign check-ins, Bluetooth), whatever the settings. */
+  private currentPositions(): PlayerPosition[] {
     const players = [...this.players.values()];
     const reports = new Map(this.positionReports);
     const bots = players.filter((pl) => pl.bot);
@@ -716,6 +845,7 @@ export class Game {
     const now = this.now();
     if (now - this.positionsSentAt < 1000) return;
     this.positionsSentAt = now;
+    this.broadcastAdmin();
     if (!this.settings.livePositions) {
       if (this.lastPositionsSent.size > 0) {
         // Turned off: clear everyone's map once.
@@ -1088,14 +1218,27 @@ export class Game {
 
   // ------------------------------------------------------------ sabotage
 
-  private startSabotage(p: Player, { kind }: { kind: "reactor" | "lights" }) {
+  /** The signs that fix a sabotage: the ones picked at game start ("use any signs"), else the dedicated ones. */
+  sabotageStations(kind: Sabotage["kind"]): Station[] {
+    if (kind === "lights") return this.stations.filter((s) => s.kind === "electrical");
+    const picked = this.settings.autoSabotageSigns ? this.sabotageSigns?.[kind] : undefined;
+    if (picked) return picked.map((id) => this.stations.find((s) => s.id === id)).filter((s): s is Station => !!s);
+    return this.stations.filter((s) => s.kind === kind);
+  }
+
+  private startSabotage(p: Player, { kind }: { kind: Sabotage["kind"] }) {
     this.requirePhase("PLAYING");
     if (p.role !== "impostor") throw new GameError("Only impostors can sabotage");
     if (this.sabotage) throw new GameError("A sabotage is already active");
     if (this.now() < this.sabotageAvailableAt) throw new GameError("Sabotage on cooldown");
-    if (kind === "reactor") {
-      if (this.stations.filter((s) => s.kind === "reactor").length < 2) throw new GameError("Map needs two reactor stations");
-      this.sabotage = { kind, deadline: this.now() + this.settings.reactorSec * 1000, activations: {} };
+    const now = this.now();
+    if (kind === "reactor" || kind === "oxygen") {
+      if (this.sabotageStations(kind).length < 2) {
+        throw new GameError(`The map needs two ${kind === "reactor" ? "reactor" : "O2"} signs (or turn on "Use any signs for sabotage")`);
+      }
+      this.sabotage = kind === "reactor"
+        ? { kind, deadline: now + this.settings.reactorSec * 1000, activations: {} }
+        : { kind, deadline: now + this.settings.oxygenSec * 1000, activations: {}, code: String(Math.floor(Math.random() * 100_000)).padStart(5, "0") };
     } else if (kind === "lights") {
       if (!this.stations.some((s) => s.kind === "electrical")) throw new GameError("Map needs an electrical station");
       this.sabotage = { kind, deadline: null, activations: {} };
@@ -1105,22 +1248,30 @@ export class Game {
     this.emitAll("SABOTAGE_STARTED", { kind });
   }
 
-  private fixSabotage(p: Player, { stationId }: { stationId: string }) {
+  /**
+   * Reactor: the phone holding a hand scanner checks in every half second; fixed once both scanners are held
+   * at the same moment. O2: the code typed at a keypad fixes that keypad; fixed once both are.
+   */
+  private fixSabotage(p: Player, { stationId, code }: { stationId: string; code?: unknown }) {
     this.requirePhase("PLAYING");
-    if (!this.sabotage) throw new GameError("Nothing to fix");
+    const sab = this.sabotage;
+    if (!sab) throw new GameError("Nothing to fix");
     if (!p.alive) throw new GameError("Ghosts can't fix sabotages");
-    const station = this.stations.find((s) => s.id === stationId);
-    if (!station) throw new GameError("Unknown station");
+    const fixes = this.sabotageStations(sab.kind);
+    if (!fixes.some((s) => s.id === stationId)) {
+      throw new GameError(sab.kind === "reactor" ? "That's not a reactor sign" : sab.kind === "oxygen" ? "That's not an O2 sign" : "Fix the lights at Electrical");
+    }
     this.requireAtStation(p, stationId);
     const now = this.now();
-    if (this.sabotage.kind === "reactor") {
-      if (station.kind !== "reactor") throw new GameError("That's not a reactor station");
-      this.sabotage.activations[stationId] = now;
+    if (sab.kind === "reactor") {
+      sab.activations[stationId] = now;
       const window = this.settings.reactorWindowSec * 1000;
-      const reactors = this.stations.filter((s) => s.kind === "reactor");
-      if (reactors.every((r) => now - (this.sabotage!.activations[r.id] ?? -Infinity) <= window)) this.resolveSabotage();
+      if (fixes.every((r) => now - (sab.activations[r.id] ?? -Infinity) <= window)) this.resolveSabotage();
+    } else if (sab.kind === "oxygen") {
+      if (String(code ?? "") !== sab.code) throw new GameError("Wrong code");
+      sab.activations[stationId] = now;
+      if (fixes.every((s) => sab.activations[s.id] !== undefined)) this.resolveSabotage();
     } else {
-      if (station.kind !== "electrical") throw new GameError("Fix the lights at Electrical");
       this.resolveSabotage();
     }
   }
@@ -1202,8 +1353,9 @@ export class Game {
     const now = this.now();
     const before = this.phase + this.phaseDeadline;
     this.runBots();
-    if (this.sabotage?.kind === "reactor" && now >= this.sabotage.deadline && this.phase === "PLAYING") {
-      this.endGame("impostors", "Reactor meltdown");
+    const sab = this.sabotage;
+    if (sab && sab.deadline !== null && now >= sab.deadline && this.phase === "PLAYING") {
+      this.endGame("impostors", sab.kind === "oxygen" ? "Oxygen depleted" : "Reactor meltdown");
     } else if (this.phaseDeadline !== null && now >= this.phaseDeadline) {
       this.advance();
     }
@@ -1230,6 +1382,7 @@ export class Game {
       result: this.result,
       sabotage: this.sabotage,
       sabotageAvailableAt: this.sabotageAvailableAt,
+      sabotageSigns: this.sabotageSigns,
       emergencyAvailableAt: this.emergencyAvailableAt,
       winner: this.winner,
       winReason: this.winReason,
@@ -1266,6 +1419,7 @@ export class Game {
     g.result = snap.result;
     g.sabotage = snap.sabotage;
     g.sabotageAvailableAt = snap.sabotageAvailableAt;
+    g.sabotageSigns = snap.sabotageSigns ?? null;
     g.emergencyAvailableAt = snap.emergencyAvailableAt;
     g.winner = snap.winner;
     g.winReason = snap.winReason;
@@ -1335,9 +1489,7 @@ export class Game {
     });
 
     const sab = this.sabotage;
-    const fixStations = sab
-      ? this.stations.filter((s) => (sab.kind === "reactor" ? s.kind === "reactor" : s.kind === "electrical"))
-      : [];
+    const fixStations = sab ? this.sabotageStations(sab.kind) : [];
 
     return {
       serverTime: now,
@@ -1371,6 +1523,7 @@ export class Game {
         nearbyBodies: this.nearbyBodies(me).map((b) => b.id),
         sabotageAvailableAt: me.role === "impostor" ? this.sabotageAvailableAt : null,
         canWatchCams: this.canWatchCams(me),
+        canViewAdmin: this.canViewAdmin(me),
         // Someone else is watching the cameras: send your front-camera frames.
         camWanted: this.phase === "PLAYING" && !me.bot && [...this.camWatchers].some((id) => id !== me.id),
       },
@@ -1397,11 +1550,15 @@ export class Game {
         ? {
             kind: sab.kind,
             deadline: sab.deadline,
+            // Reactor: a hand on that scanner right now. O2: that keypad's done.
             stations: fixStations.map((s) => ({
               stationId: s.id,
-              active:
-                sab.kind === "reactor" && now - (sab.activations[s.id] ?? -Infinity) <= this.settings.reactorWindowSec * 1000,
+              active: sab.kind === "reactor"
+                ? now - (sab.activations[s.id] ?? -Infinity) <= this.settings.reactorWindowSec * 1000
+                : sab.activations[s.id] !== undefined,
             })),
+            // The O2 code is on a note by each keypad, as in Among Us.
+            code: sab.kind === "oxygen" ? sab.code : null,
           }
         : null,
       winner: this.winner,
@@ -1457,12 +1614,13 @@ export interface StateView {
     nearbyBodies: string[];
     sabotageAvailableAt: number | null;
     canWatchCams: boolean;
+    canViewAdmin: boolean;
     camWanted: boolean;
   };
   emergencyAvailableAt: number;
   meeting: { kind: MeetingKind; calledBy: string | null; bodyId: string | null; stage: string; arrived: string[] } | null;
   result: (VoteResult & { ejectedRole: string | null }) | null;
-  sabotage: { kind: string; deadline: number | null; stations: { stationId: string; active: boolean }[] } | null;
+  sabotage: { kind: string; deadline: number | null; stations: { stationId: string; active: boolean }[]; code: string | null } | null;
   winner: Winner | null;
   winReason: string | null;
   gameset: { id: string; name: string } | null;

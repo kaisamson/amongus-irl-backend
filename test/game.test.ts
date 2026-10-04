@@ -913,3 +913,106 @@ test("quitting the lobby removes the player, frees the name and passes the host 
   assert.equal(ctx.game.stations.some((s) => s.name === "Mine"), false, "their signs go with them");
   assert.equal(ctx.game.addPlayer(host.name).name, host.name, "the name is free again");
 });
+
+test("shared tasks: each sign has one mini-game for everyone, signs are shared evenly, sets differ", () => {
+  const signs = ["A", "B", "C", "D", "E", "F"].map((name) => ({ name, kind: "task" as const }));
+  const ctx = setup(7, signs);
+  ctx.game.settings.tasksPerPlayer = 3;
+  ctx.game.settings.taskTypes = ["wiring", "upload", "swipe", "shields"];
+  const { crew } = startPlaying(ctx);
+  const typeAt = new Map<string, string>();
+  const uses = new Map<string, number>();
+  for (const p of ctx.players) {
+    assert.equal(new Set(p.tasks.map((t) => t.steps[0])).size, 3, "three different signs each");
+    for (const t of p.tasks) {
+      const sign = t.steps[0];
+      if (typeAt.has(sign)) assert.equal(t.type, typeAt.get(sign), "same mini-game at a sign for everyone");
+      typeAt.set(sign, t.type);
+    }
+  }
+  for (const c of crew) for (const t of c.tasks) uses.set(t.steps[0], (uses.get(t.steps[0]) ?? 0) + 1);
+  const counts = [...uses.values()];
+  assert.ok(Math.max(...counts) - Math.min(...counts) <= 1, `crew shares every sign evenly: ${counts}`);
+  const sets = new Set(crew.map((c) => c.tasks.map((t) => t.steps[0]).sort().join()));
+  assert.ok(sets.size >= crew.length - 1, "almost everyone has a different set");
+});
+
+test("oxygen sabotage: the code at both keypads fixes it; running out of time loses", () => {
+  for (const fixIt of [true, false]) {
+    const ctx = setup(4, [
+      { name: "T", kind: "task" },
+      { name: "O2 A", kind: "oxygen" },
+      { name: "O2 B", kind: "oxygen" },
+    ]);
+    const { impostor, crew } = startPlaying(ctx);
+    ctx.advance(ctx.game.settings.sabotageCooldownSec * 1000);
+    ctx.act(impostor, "sabotage", { kind: "oxygen" });
+    const view = ctx.game.viewFor(crew[0].id).sabotage!;
+    assert.equal(view.kind, "oxygen");
+    assert.match(view.code!, /^\d{5}$/);
+    if (fixIt) {
+      const [a, b] = [ctx.station("O2 A"), ctx.station("O2 B")];
+      ctx.act(crew[0], "checkpoint", { stationId: a.id, method: "sign" });
+      assert.throws(() => ctx.act(crew[0], "fix_sabotage", { stationId: a.id, code: "x" }), /Wrong code/);
+      ctx.act(crew[0], "fix_sabotage", { stationId: a.id, code: view.code });
+      assert.ok(ctx.game.viewFor(crew[1].id).sabotage!.stations.find((s) => s.stationId === a.id)!.active, "keypad A shows done");
+      ctx.act(crew[1], "checkpoint", { stationId: b.id, method: "sign" });
+      ctx.act(crew[1], "fix_sabotage", { stationId: b.id, code: view.code });
+      assert.equal(ctx.game.sabotage, null);
+    } else {
+      ctx.advance(ctx.game.settings.oxygenSec * 1000);
+      assert.equal(ctx.game.winner, "impostors");
+      assert.equal(ctx.game.winReason, "Oxygen depleted");
+    }
+  }
+});
+
+test("use any signs for sabotage: reactor and O2 go to spread-out task signs", () => {
+  const spot = (name: string, north: number) => ({ name, kind: "task" as const, lat: 49.2778 + north / 111_320, lng: -122.914 });
+  const ctx = setup(4, [spot("S0", 0), spot("S1", 1), spot("S2", 30), spot("S3", 60), spot("S4", 61)]);
+  ctx.game.settings.autoSabotageSigns = true;
+  const { impostor, crew } = startPlaying(ctx);
+  const picked = ctx.game.sabotageSigns!;
+  const all = [...picked.reactor, ...picked.oxygen];
+  assert.equal(new Set(all).size, 4, "four different signs");
+  const names = (ids: string[]) => ids.map((id) => ctx.game.stations.find((s) => s.id === id)!.name);
+  assert.ok(!(names(picked.reactor).includes("S0") && names(picked.reactor).includes("S1")), "never two signs a metre apart for one reactor");
+  ctx.advance(ctx.game.settings.sabotageCooldownSec * 1000);
+  ctx.act(impostor, "sabotage", { kind: "reactor" });
+  const [a, b] = picked.reactor;
+  ctx.act(crew[0], "checkpoint", { stationId: a, method: "sign" });
+  ctx.act(crew[1], "checkpoint", { stationId: b, method: "sign" });
+  ctx.act(crew[0], "fix_sabotage", { stationId: a });
+  ctx.advance(3000); // let go: the hands weren't on both scanners at once
+  ctx.act(crew[1], "fix_sabotage", { stationId: b });
+  assert.ok(ctx.game.sabotage, "one hand at a time doesn't fix it");
+  ctx.act(crew[0], "fix_sabotage", { stationId: a });
+  assert.equal(ctx.game.sabotage, null, "both hands at once fixes it");
+});
+
+test("admin: after scanning the Admin sign, the map gets everyone's whereabouts without names", () => {
+  let clock = 1_000_000;
+  const inbox = new Map<string, Outbound[]>();
+  const game = new Game("ADMN", "m", [], (id, msg) => inbox.set(id, [...(inbox.get(id) ?? []), msg]), {}, () => clock);
+  game.settings.signsPerPlayer = 0;
+  const players = [0, 1, 2, 3].map((i) => game.addPlayer(`P${i}`));
+  game.handle(players[0].id, "add_station", { name: "Red button", kind: "emergency" });
+  const admin = game.handle(players[0].id, "add_station", { name: "Admin", kind: "admin" }) as Station;
+  game.handle(players[0].id, "start_game", {});
+  for (const p of players) game.handle(p.id, "ack_role", {});
+  const viewer = players.find((p) => p.role === "crewmate")!;
+  assert.throws(() => game.handle(viewer.id, "admin_watch", { on: true }), /Scan the Admin sign/);
+  for (const [i, p] of players.entries()) {
+    game.handle(p.id, "position", { lat: 49.2778 + i * 1e-5, lng: -122.914, accuracyM: 3, buildingId: "ASB", floorId: "09" });
+  }
+  game.handle(viewer.id, "checkpoint", { stationId: admin.id, method: "sign" });
+  assert.equal(game.viewFor(viewer.id).me.canViewAdmin, true);
+  game.handle(viewer.id, "admin_watch", { on: true });
+  clock += 1500;
+  game.tick();
+  const sent = (inbox.get(viewer.id) ?? []).filter((m) => m.type === "admin") as { type: "admin"; people: object[] }[];
+  assert.equal(sent.at(-1)!.people.length, 4);
+  assert.ok(sent.at(-1)!.people.every((p) => !("playerId" in p) && !("name" in p)), "no names");
+  const other = players.find((p) => p.id !== viewer.id)!;
+  assert.equal((inbox.get(other.id) ?? []).filter((m) => m.type === "admin").length, 0, "only the viewer gets it");
+});

@@ -10,8 +10,9 @@ export type Phase =
 export type Role = "crewmate" | "impostor";
 
 /** What a physical checkpoint is used for. */
-/** `security` (cameras) and `admin` (room occupancy) are optional signs for the Skeld-style rooms. */
-export type StationKind = "task" | "meeting" | "emergency" | "reactor" | "electrical" | "security" | "admin";
+/** `security` (cameras) and `admin` (room occupancy) are optional signs for the Skeld-style rooms.
+ *  `oxygen` is the O2 keypads (two); `electrical` is the old lights sabotage, kept for saved maps. */
+export type StationKind = "task" | "meeting" | "emergency" | "reactor" | "oxygen" | "electrical" | "security" | "admin";
 
 export type TaskType = "wiring" | "upload" | "sequence" | "delivery" | "swipe" | "shields" | "o2" | "scan" | "divert";
 
@@ -86,6 +87,10 @@ export interface Settings {
   sabotageCooldownSec: number;
   reactorSec: number;
   reactorWindowSec: number;
+  /** Seconds to fix the oxygen before the impostors win. */
+  oxygenSec: number;
+  /** Sabotages use existing signs the server picks (spread out) instead of dedicated reactor/O2 signs. */
+  autoSabotageSigns: boolean;
   /** Everyone sees everyone's estimated position on the map, in the lobby and in game. On by default. */
   livePositions: boolean;
   /** Play area: the SFU building and floor the game is on (campus map ids, e.g. "SUB" / "2000"). Empty = not set. */
@@ -125,7 +130,10 @@ export const DEFAULT_SETTINGS: Settings = {
   scanSec: 10,
   sabotageCooldownSec: 45,
   reactorSec: 45,
-  reactorWindowSec: 10,
+  // Hands on both scanners at once: phones holding a scanner check in every half second.
+  reactorWindowSec: 2,
+  oxygenSec: 60,
+  autoSabotageSigns: false,
   livePositions: true,
   mapBuildingId: "",
   mapFloorId: "",
@@ -228,8 +236,18 @@ export interface VoteResult {
 }
 
 export type Sabotage =
+  /** Two people hold their hands on both reactor scanners at once (activations: last "still holding"). */
   | { kind: "reactor"; deadline: number; activations: Record<string, number> }
+  /** Both O2 keypads need the code typed in (activations: when each was fixed). */
+  | { kind: "oxygen"; deadline: number; activations: Record<string, number>; code: string }
+  /** Legacy: older apps' lights sabotage. */
   | { kind: "lights"; deadline: null; activations: Record<string, number> };
+
+/** Signs the server picked for sabotages ("use any signs for sabotage"), chosen at game start. */
+export interface SabotageSigns {
+  reactor: string[];
+  oxygen: string[];
+}
 
 export type Winner = "crewmates" | "impostors";
 
