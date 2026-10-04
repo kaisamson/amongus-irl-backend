@@ -830,3 +830,24 @@ test("a preferred suit colour is used when it's free; kills name the killer", ()
   assert.equal(ctx.game.viewFor(crew[0].id).me.killedBy, impostor.id);
   assert.equal(ctx.game.viewFor(crew[1].id).me.killedBy, null);
 });
+
+test("lobby signs can be moved: special signs and your own by anyone, others' only by the host", () => {
+  const game = new Game("MOVE", "m", [], () => {}, {}, () => 1_000_000);
+  const host = game.addPlayer("Host");
+  const friend = game.addPlayer("Friend");
+  const mine = game.handle(friend.id, "add_station", { name: "Mine", kind: "task", lat: 1, lng: 1 }) as Station;
+  const hosts = game.handle(host.id, "add_station", { name: "Host's", kind: "task" }) as Station;
+  const button = game.handle(host.id, "add_station", { name: "Red button", kind: "emergency", photoId: "p" }) as Station;
+  const at = { lat: 49.2788, lng: -122.9187, buildingId: "ASB", floorId: "09" };
+
+  game.handle(friend.id, "move_station", { stationId: mine.id, ...at });
+  game.handle(friend.id, "move_station", { stationId: button.id, ...at });
+  assert.throws(() => game.handle(friend.id, "move_station", { stationId: hosts.id, ...at }), /Only the host/);
+  game.handle(host.id, "move_station", { stationId: mine.id, ...at, floorId: "10" });
+
+  const after = (id: string) => game.stations.find((s) => s.id === id)!;
+  assert.deepEqual(after(mine.id), { ...mine, ...at, floorId: "10" });
+  assert.deepEqual(after(button.id), { ...button, ...at }, "photo and kind are kept");
+  assert.throws(() => game.handle(host.id, "move_station", { stationId: "nope", ...at }), /No sign/);
+  assert.throws(() => game.handle(host.id, "move_station", { stationId: mine.id, lat: "x", lng: 0 }), /latitude/);
+});

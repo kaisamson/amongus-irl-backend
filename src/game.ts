@@ -267,6 +267,7 @@ export class Game {
       case "update_settings": result = this.updateSettings(p, payload); break;
       case "add_station": result = this.addStation(p, payload); break;
       case "delete_station": result = this.deleteStation(p, payload); break;
+      case "move_station": result = this.moveStation(p, payload); break;
       case "kick": result = this.kick(p, payload); break;
       case "set_color": result = this.setColor(p, payload); break;
       case "set_face": result = this.setFace(p, payload); break;
@@ -369,6 +370,18 @@ export class Game {
     if (station?.kind === "task" && station.addedBy !== p.id) this.requireHost(p);
     this.stations = this.stations.filter((s) => s.id !== stationId);
     this.hooks.onStationsChanged?.(this.stations);
+  }
+
+  /** Moves a sign's map pin and floor. Same rules as removing it; a saved game's own copy is unchanged. */
+  private moveStation(p: Player, payload: { stationId?: unknown; lat?: unknown; lng?: unknown; buildingId?: unknown; floorId?: unknown }) {
+    this.requirePhase("LOBBY");
+    const station = this.stations.find((s) => s.id === payload?.stationId);
+    if (!station) throw new GameError("No sign with that id");
+    if (station.kind === "task" && station.addedBy !== p.id) this.requireHost(p);
+    const moved = placeStation(station, payload);
+    this.stations = this.stations.map((s) => (s.id === station.id ? moved : s));
+    this.hooks.onStationsChanged?.(this.stations);
+    return moved;
   }
 
   /**
